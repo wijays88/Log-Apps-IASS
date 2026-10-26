@@ -1,0 +1,6 @@
+{
+  "name": "PT IAS Support — Logistics Control Tower",
+  "description": "Sistem Manajemen Inventaris & Menara Kontrol Logistik Terpadu PT IAS Support. Pemantauan posisi stok real-time, penerimaan barang, pengeluaran, transfer antar gudang, stock opname, approval bertingkat, dan manajemen akun multi-peran.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
