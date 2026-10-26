@@ -37,8 +37,8 @@ export const Dashboard: React.FC = () => {
     (item) => item.availableStock > item.minimumStock && item.availableStock <= item.reorderPoint
   );
 
-  // Today's receipts & issues
-  const todayStr = '2026-10-21'; // or dynamic current date
+  // Today's receipts & issues calculated dynamically from current date
+  const todayStr = new Date().toISOString().slice(0, 10);
   const todayReceipts = goodsReceipts.filter((gr) => gr.receiptDate?.startsWith(todayStr) || gr.createdAt?.startsWith(todayStr));
   const todayReceiptsCount = todayReceipts.reduce((sum, r) => sum + r.quantity, 0);
 
@@ -337,7 +337,15 @@ export const Dashboard: React.FC = () => {
             </div>
 
             <div className="divide-y divide-slate-100">
-              {/* Combine top recent records */}
+              {/* Combine top recent records or show empty state */}
+              {goodsReceipts.length === 0 && goodsIssues.length === 0 && stockTransfers.length === 0 && (
+                <div className="p-8 text-center text-slate-400">
+                  <Clock className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                  <p className="font-semibold text-slate-600 text-xs">Belum ada transaksi inventaris tercatat</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Transaksi penerimaan barang, pengeluaran, atau transfer akan otomatis tampil di sini.</p>
+                </div>
+              )}
+
               {goodsReceipts.slice(0, 2).map((gr) => (
                 <div key={gr.id} className="p-4 flex items-center justify-between text-xs hover:bg-slate-50 transition">
                   <div className="flex items-center gap-3">
@@ -450,29 +458,37 @@ export const Dashboard: React.FC = () => {
             </div>
 
             <div className="space-y-4">
-              {locationStats.map((loc) => {
-                const percentage = totalInventoryCount > 0 ? Math.round((loc.totalQty / totalInventoryCount) * 100) : 0;
-                return (
-                  <div key={loc.id} className="text-xs">
-                    <div className="flex items-center justify-between font-semibold text-slate-800 mb-1">
-                      <span className="truncate pr-2">{loc.name}</span>
-                      <span className="font-mono text-[#064e3b] shrink-0">
-                        {loc.totalQty.toLocaleString('id-ID')} unit ({percentage}%)
-                      </span>
+              {locationStats.length === 0 ? (
+                <div className="py-6 text-center text-slate-400">
+                  <Warehouse className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                  <p className="font-semibold text-slate-600 text-xs">Belum ada lokasi gudang terdaftar</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Tambahkan lokasi baru melalui menu Master Lokasi.</p>
+                </div>
+              ) : (
+                locationStats.map((loc) => {
+                  const percentage = totalInventoryCount > 0 ? Math.round((loc.totalQty / totalInventoryCount) * 100) : 0;
+                  return (
+                    <div key={loc.id} className="text-xs">
+                      <div className="flex items-center justify-between font-semibold text-slate-800 mb-1">
+                        <span className="truncate pr-2">{loc.name}</span>
+                        <span className="font-mono text-[#064e3b] shrink-0">
+                          {loc.totalQty.toLocaleString('id-ID')} unit ({percentage}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-[#064e3b] transition-all duration-500"
+                          style={{ width: `${percentage}%` }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1 font-mono">
+                        <span>PIC: {loc.picName}</span>
+                        <span>{loc.skuCount} SKU terdaftar</span>
+                      </div>
                     </div>
-                    <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-[#064e3b] transition-all duration-500"
-                        style={{ width: `${percentage}%` }}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1 font-mono">
-                      <span>PIC: {loc.picName}</span>
-                      <span>{loc.skuCount} SKU terdaftar</span>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
 
             <div className="mt-5 pt-4 border-t border-slate-100">

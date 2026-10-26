@@ -398,7 +398,14 @@ export const PosisiPersediaan: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {(activeSubTab === 'TOILET_BUILDING' ? toiletBuildingItems : filteredInventory).map((item) => {
+                  {(activeSubTab === 'TOILET_BUILDING' ? toiletBuildingItems : filteredInventory).length === 0 ? (
+                    <tr>
+                      <td colSpan={12} className="py-12 text-center text-slate-400">
+                        Belum ada data saldo stok inventaris yang terdaftar.
+                      </td>
+                    </tr>
+                  ) : (
+                    (activeSubTab === 'TOILET_BUILDING' ? toiletBuildingItems : filteredInventory).map((item) => {
                     const isCritical = item.availableStock <= item.minimumStock;
                     const isLow = item.availableStock > item.minimumStock && item.availableStock <= item.reorderPoint;
 
@@ -444,7 +451,8 @@ export const PosisiPersediaan: React.FC = () => {
                         <td className="py-3 px-4 font-mono text-slate-500 text-[11px]">{item.lastTransactionDate}</td>
                       </tr>
                     );
-                  })}
+                  })
+                )}
                 </tbody>
               </table>
             </div>
@@ -495,7 +503,14 @@ export const PosisiPersediaan: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {consumptions.map((c) => (
+                  {consumptions.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-12 text-center text-slate-400">
+                        Belum ada pencatatan pemakaian harian (tissue, plastik, & chemical).
+                      </td>
+                    </tr>
+                  ) : (
+                    consumptions.map((c) => (
                     <tr key={c.id} className="hover:bg-slate-50">
                       <td className="py-3 px-4 font-mono font-bold text-slate-800">{c.date}</td>
                       <td className="py-3 px-4 font-semibold text-slate-900">{c.locationName}</td>
@@ -518,7 +533,8 @@ export const PosisiPersediaan: React.FC = () => {
                         {c.notes || '-'}
                       </td>
                     </tr>
-                  ))}
+                  ))
+                )}
                 </tbody>
               </table>
             </div>
@@ -553,7 +569,14 @@ export const PosisiPersediaan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {polybagItems.map((p) => (
+                {polybagItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-12 text-center text-slate-400">
+                      Belum ada data stok polybag per ukuran yang terdaftar.
+                    </td>
+                  </tr>
+                ) : (
+                  polybagItems.map((p) => (
                   <tr key={p.id} className="hover:bg-slate-50">
                     <td className="py-3 px-4 font-mono font-bold text-slate-900">{p.materialCode}</td>
                     <td className="py-3 px-4 font-bold text-slate-900">{p.materialName}</td>
@@ -570,7 +593,8 @@ export const PosisiPersediaan: React.FC = () => {
                       )}
                     </td>
                   </tr>
-                ))}
+                ))
+              )}
               </tbody>
             </table>
           </div>
@@ -604,7 +628,14 @@ export const PosisiPersediaan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {uniformItems.map((u) => (
+                {uniformItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-12 text-center text-slate-400">
+                      Belum ada data stok seragam per size yang terdaftar.
+                    </td>
+                  </tr>
+                ) : (
+                  uniformItems.map((u) => (
                   <tr key={u.id} className="hover:bg-slate-50">
                     <td className="py-3 px-4 font-mono font-bold text-slate-900">{u.materialCode}</td>
                     <td className="py-3 px-4 font-bold text-slate-900">{u.materialName}</td>
@@ -625,7 +656,8 @@ export const PosisiPersediaan: React.FC = () => {
                       )}
                     </td>
                   </tr>
-                ))}
+                ))
+              )}
               </tbody>
             </table>
           </div>
@@ -673,7 +705,14 @@ export const PosisiPersediaan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {morganTrolleys.map((t) => (
+                {morganTrolleys.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-12 text-center text-slate-400">
+                      Belum ada penempatan Morgan Trolley yang terdaftar.
+                    </td>
+                  </tr>
+                ) : (
+                  morganTrolleys.map((t) => (
                   <tr key={t.id} className="hover:bg-slate-50">
                     <td className="py-3 px-4 font-semibold text-slate-900">{t.locationName}</td>
                     <td className="py-3 px-4 font-medium text-slate-800">{t.area}</td>
@@ -700,7 +739,8 @@ export const PosisiPersediaan: React.FC = () => {
                       {t.notes || '-'}
                     </td>
                   </tr>
-                ))}
+                ))
+              )}
               </tbody>
             </table>
           </div>
@@ -750,7 +790,14 @@ export const PosisiPersediaan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {supplyRequests.map((r) => (
+                {supplyRequests.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="py-12 text-center text-slate-400">
+                      Belum ada permintaan barang (supply request) yang terdaftar.
+                    </td>
+                  </tr>
+                ) : (
+                  supplyRequests.map((r) => (
                   <tr key={r.id} className="hover:bg-slate-50">
                     <td className="py-3 px-4 font-mono font-bold text-blue-900">{r.requestNumber}</td>
                     <td className="py-3 px-4 font-mono text-slate-600">{r.requestDate}</td>
@@ -792,7 +839,8 @@ export const PosisiPersediaan: React.FC = () => {
                       )}
                     </td>
                   </tr>
-                ))}
+                ))
+              )}
               </tbody>
             </table>
           </div>

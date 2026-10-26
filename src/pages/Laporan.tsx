@@ -263,22 +263,30 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {items.map((it) => (
-                  <tr key={it.id} className="hover:bg-slate-50">
-                    <td className="py-2 px-3 font-mono font-bold text-slate-800">{it.itemCode}</td>
-                    <td className="py-2 px-3 font-medium text-slate-900">{it.itemName}</td>
-                    <td className="py-2 px-3 text-slate-600">{it.categoryName}</td>
-                    <td className="py-2 px-3 text-slate-600">{it.unit}</td>
-                    <td className="py-2 px-3 text-slate-700">{it.locationName}</td>
-                    <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">
-                      {it.availableStock}
-                    </td>
-                    <td className="py-2 px-3 text-center font-mono text-slate-600">{it.minimumStock}</td>
-                    <td className="py-2 px-3 text-right font-mono text-emerald-800">
-                      Rp {((it.unitCost || 0) * it.availableStock).toLocaleString('id-ID')}
+                {items.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-10 text-center text-slate-400">
+                      Belum ada data saldo stok inventaris yang terdaftar.
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  items.map((it) => (
+                    <tr key={it.id} className="hover:bg-slate-50">
+                      <td className="py-2 px-3 font-mono font-bold text-slate-800">{it.itemCode}</td>
+                      <td className="py-2 px-3 font-medium text-slate-900">{it.itemName}</td>
+                      <td className="py-2 px-3 text-slate-600">{it.categoryName}</td>
+                      <td className="py-2 px-3 text-slate-600">{it.unit}</td>
+                      <td className="py-2 px-3 text-slate-700">{it.locationName}</td>
+                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">
+                        {it.availableStock}
+                      </td>
+                      <td className="py-2 px-3 text-center font-mono text-slate-600">{it.minimumStock}</td>
+                      <td className="py-2 px-3 text-right font-mono text-emerald-800">
+                        Rp {((it.unitCost || 0) * it.availableStock).toLocaleString('id-ID')}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -300,20 +308,28 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {goodsReceipts.map((gr) => (
-                  <tr key={gr.id} className="hover:bg-slate-50">
-                    <td className="py-2 px-3 font-mono font-bold text-emerald-900">{gr.receiptNumber}</td>
-                    <td className="py-2 px-3 font-mono text-slate-600">{gr.receiptDate}</td>
-                    <td className="py-2 px-3 font-semibold text-slate-800">{gr.sourceSupplier}</td>
-                    <td className="py-2 px-3 font-mono text-[11px] text-slate-600">{gr.referenceDocument}</td>
-                    <td className="py-2 px-3 font-medium text-slate-900">{gr.itemName}</td>
-                    <td className="py-2 px-3 text-right font-mono font-bold text-emerald-700">
-                      +{gr.quantity} {gr.unit}
+                {goodsReceipts.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-10 text-center text-slate-400">
+                      Belum ada transaksi penerimaan barang dalam periode ini.
                     </td>
-                    <td className="py-2 px-3 text-slate-700">{gr.destinationLocationName}</td>
-                    <td className="py-2 px-3 text-slate-600">{gr.recordedBy}</td>
                   </tr>
-                ))}
+                ) : (
+                  goodsReceipts.map((gr) => (
+                    <tr key={gr.id} className="hover:bg-slate-50">
+                      <td className="py-2 px-3 font-mono font-bold text-emerald-900">{gr.receiptNumber}</td>
+                      <td className="py-2 px-3 font-mono text-slate-600">{gr.receiptDate}</td>
+                      <td className="py-2 px-3 font-semibold text-slate-800">{gr.sourceSupplier}</td>
+                      <td className="py-2 px-3 font-mono text-[11px] text-slate-600">{gr.referenceDocument}</td>
+                      <td className="py-2 px-3 font-medium text-slate-900">{gr.itemName}</td>
+                      <td className="py-2 px-3 text-right font-mono font-bold text-emerald-700">
+                        +{gr.quantity} {gr.unit}
+                      </td>
+                      <td className="py-2 px-3 text-slate-700">{gr.destinationLocationName}</td>
+                      <td className="py-2 px-3 text-slate-600">{gr.recordedBy}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -336,21 +352,29 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {goodsIssues.map((gi) => (
-                  <tr key={gi.id} className="hover:bg-slate-50">
-                    <td className="py-2 px-3 font-mono font-bold text-indigo-900">{gi.issueNumber}</td>
-                    <td className="py-2 px-3 font-mono text-slate-600">{gi.requestDate}</td>
-                    <td className="py-2 px-3 font-semibold text-slate-800">{gi.requestingUnit}</td>
-                    <td className="py-2 px-3 text-slate-700">{gi.destination}</td>
-                    <td className="py-2 px-3 font-medium text-slate-900">{gi.itemName}</td>
-                    <td className="py-2 px-3 text-right font-mono">{gi.requestedQuantity} {gi.unit}</td>
-                    <td className="py-2 px-3 text-right font-mono font-bold text-emerald-700">
-                      {gi.status === 'APPROVED' ? `${gi.approvedQuantity} ${gi.unit}` : '-'}
+                {goodsIssues.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-10 text-center text-slate-400">
+                      Belum ada transaksi pengeluaran barang dalam periode ini.
                     </td>
-                    <td className="py-2 px-3 text-center font-bold text-[10px]">{gi.status}</td>
-                    <td className="py-2 px-3 text-slate-600">{gi.processedBy || '-'}</td>
                   </tr>
-                ))}
+                ) : (
+                  goodsIssues.map((gi) => (
+                    <tr key={gi.id} className="hover:bg-slate-50">
+                      <td className="py-2 px-3 font-mono font-bold text-indigo-900">{gi.issueNumber}</td>
+                      <td className="py-2 px-3 font-mono text-slate-600">{gi.requestDate}</td>
+                      <td className="py-2 px-3 font-semibold text-slate-800">{gi.requestingUnit}</td>
+                      <td className="py-2 px-3 text-slate-700">{gi.destination}</td>
+                      <td className="py-2 px-3 font-medium text-slate-900">{gi.itemName}</td>
+                      <td className="py-2 px-3 text-right font-mono">{gi.requestedQuantity} {gi.unit}</td>
+                      <td className="py-2 px-3 text-right font-mono font-bold text-emerald-700">
+                        {gi.status === 'APPROVED' ? `${gi.approvedQuantity} ${gi.unit}` : '-'}
+                      </td>
+                      <td className="py-2 px-3 text-center font-bold text-[10px]">{gi.status}</td>
+                      <td className="py-2 px-3 text-slate-600">{gi.processedBy || '-'}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -372,35 +396,43 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {items
-                  .filter((it) => it.availableStock <= it.reorderPoint)
-                  .map((it) => {
-                    const isCritical = it.availableStock <= it.minimumStock;
-                    return (
-                      <tr key={it.id} className="hover:bg-slate-50">
-                        <td className="py-2 px-3 font-mono font-bold text-slate-800">{it.itemCode}</td>
-                        <td className="py-2 px-3 font-bold text-slate-900">{it.itemName}</td>
-                        <td className="py-2 px-3 text-slate-700">{it.locationName}</td>
-                        <td className={`py-2 px-3 text-right font-mono font-extrabold ${isCritical ? 'text-rose-700' : 'text-amber-700'}`}>
-                          {it.availableStock} {it.unit}
-                        </td>
-                        <td className="py-2 px-3 text-center font-mono">{it.minimumStock}</td>
-                        <td className="py-2 px-3 text-center font-mono">{it.reorderPoint}</td>
-                        <td className="py-2 px-3 text-center">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              isCritical ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
-                            }`}
-                          >
-                            {isCritical ? 'KRITIS TINGGI' : 'MENIPIS (ROP)'}
-                          </span>
-                        </td>
-                        <td className="py-2 px-3 text-slate-700 text-[11px]">
-                          Segera terbitkan Purchase Order penambahan stok minimum {it.reorderPoint * 2} {it.unit}.
-                        </td>
-                      </tr>
-                    );
-                  })}
+                {items.filter((it) => it.availableStock <= it.reorderPoint).length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-10 text-center text-slate-400">
+                      Tidak ada material yang mencapai batas kritis atau titik pemesanan ulang (ROP).
+                    </td>
+                  </tr>
+                ) : (
+                  items
+                    .filter((it) => it.availableStock <= it.reorderPoint)
+                    .map((it) => {
+                      const isCritical = it.availableStock <= it.minimumStock;
+                      return (
+                        <tr key={it.id} className="hover:bg-slate-50">
+                          <td className="py-2 px-3 font-mono font-bold text-slate-800">{it.itemCode}</td>
+                          <td className="py-2 px-3 font-bold text-slate-900">{it.itemName}</td>
+                          <td className="py-2 px-3 text-slate-700">{it.locationName}</td>
+                          <td className={`py-2 px-3 text-right font-mono font-extrabold ${isCritical ? 'text-rose-700' : 'text-amber-700'}`}>
+                            {it.availableStock} {it.unit}
+                          </td>
+                          <td className="py-2 px-3 text-center font-mono">{it.minimumStock}</td>
+                          <td className="py-2 px-3 text-center font-mono">{it.reorderPoint}</td>
+                          <td className="py-2 px-3 text-center">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                isCritical ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                              }`}
+                            >
+                              {isCritical ? 'KRITIS TINGGI' : 'MENIPIS (ROP)'}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-slate-700 text-[11px]">
+                            Segera terbitkan Purchase Order penambahan stok minimum {it.reorderPoint * 2} {it.unit}.
+                          </td>
+                        </tr>
+                      );
+                    })
+                )}
               </tbody>
             </table>
           </div>
@@ -421,16 +453,24 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {stockTransfers.map((st) => (
-                  <tr key={st.id} className="hover:bg-slate-50">
-                    <td className="py-2 px-3 font-mono font-bold text-blue-900">{st.transferNumber}</td>
-                    <td className="py-2 px-3 text-slate-800">Transfer: {st.itemName} ({st.originLocationName} → {st.destinationLocationName})</td>
-                    <td className="py-2 px-3 text-slate-600">{st.destinationLocationName}</td>
-                    <td className="py-2 px-3 text-right font-mono font-bold">{st.quantity} {st.unit}</td>
-                    <td className="py-2 px-3 text-center font-bold text-[10px]">{st.status}</td>
-                    <td className="py-2 px-3 font-mono text-slate-500">{st.requestDate}</td>
+                {stockTransfers.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-10 text-center text-slate-400">
+                      Belum ada pergerakan transfer stok antar gudang.
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  stockTransfers.map((st) => (
+                    <tr key={st.id} className="hover:bg-slate-50">
+                      <td className="py-2 px-3 font-mono font-bold text-blue-900">{st.transferNumber}</td>
+                      <td className="py-2 px-3 text-slate-800">Transfer: {st.itemName} ({st.originLocationName} → {st.destinationLocationName})</td>
+                      <td className="py-2 px-3 text-slate-600">{st.destinationLocationName}</td>
+                      <td className="py-2 px-3 text-right font-mono font-bold">{st.quantity} {st.unit}</td>
+                      <td className="py-2 px-3 text-center font-bold text-[10px]">{st.status}</td>
+                      <td className="py-2 px-3 font-mono text-slate-500">{st.requestDate}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -448,16 +488,16 @@ export const Laporan: React.FC = () => {
           <div>
             <p className="text-slate-500 text-[11px]">Diverifikasi Site Head:</p>
             <div className="h-16 flex items-end justify-center font-bold text-slate-800">
-              Ir. Hendra Wijaya, M.M.
+              ( ........................................ )
             </div>
-            <p className="text-[10px] text-slate-400 font-mono">Site Head Hub CGK</p>
+            <p className="text-[10px] text-slate-400 font-mono">Site Head Operasional</p>
           </div>
           <div>
             <p className="text-slate-500 text-[11px]">Disetujui Administrator:</p>
             <div className="h-16 flex items-end justify-center font-bold text-slate-800">
-              Andi Pratama, S.T.
+              ( ........................................ )
             </div>
-            <p className="text-[10px] text-slate-400 font-mono">Logistics Control Tower Admin</p>
+            <p className="text-[10px] text-slate-400 font-mono">Administrator PT IAS Support</p>
           </div>
         </div>
       </div>

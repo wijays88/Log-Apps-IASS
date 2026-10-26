@@ -157,24 +157,24 @@ export const Pengaturan: React.FC = () => {
         )}
       </form>
 
-      {/* Card 3: Demo Data Reset */}
+      {/* Card 3: Storage Cache Reset */}
       <div className="bg-slate-50 rounded-2xl border border-slate-200 p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-            <RefreshCw className="w-4 h-4 text-amber-600" />
-            <span>Reset Data Simulasi (PT IAS Support)</span>
+            <RefreshCw className="w-4 h-4 text-emerald-700" />
+            <span>Bersihkan / Reset Cache Data Lokal</span>
           </h4>
           <p className="text-xs text-slate-500 mt-1 max-w-lg">
-            Mengembalikan seluruh master data, transaksi gudang, log audit, dan akun personil ke data awal seed PT IAS Support.
+            Mengembalikan master data standar dan mengosongkan cache transaksi lokal pada peramban ke kondisi bersih operasional PT IAS Support.
           </p>
         </div>
 
         <button
           onClick={resetToInitialData}
-          className="px-4 py-2 rounded-xl bg-white border border-amber-300 text-amber-900 hover:bg-amber-50 font-bold text-xs shadow-2xs transition flex items-center gap-2 shrink-0"
+          className="px-4 py-2 rounded-xl bg-white border border-emerald-300 text-emerald-900 hover:bg-emerald-50 font-bold text-xs shadow-2xs transition flex items-center gap-2 shrink-0"
         >
-          <RefreshCw className="w-4 h-4 text-amber-700" />
-          <span>Reset ke Data Awal</span>
+          <RefreshCw className="w-4 h-4 text-emerald-700" />
+          <span>Reset ke Kondisi Bersih</span>
         </button>
       </div>
     </div>

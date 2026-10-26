@@ -200,7 +200,28 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const STORAGE_KEY_PREFIX = 'pt_ias_control_tower_v2_';
+const STORAGE_KEY_PREFIX = 'pt_ias_control_tower_v3_';
+
+// Automatically clean up obsolete mock data caches from prior versions
+if (typeof window !== 'undefined' && window.localStorage) {
+  try {
+    const obsoleteKeys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        (k.startsWith('pt_ias_control_tower_v1_') ||
+          k.startsWith('pt_ias_control_tower_v2_') ||
+          k.startsWith('ias_logistics_'))
+      ) {
+        obsoleteKeys.push(k);
+      }
+    }
+    obsoleteKeys.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // Ignore storage access restrictions
+  }
+}
 
 function getJakartaTimestamp(): string {
   const now = new Date();

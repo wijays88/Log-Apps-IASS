@@ -153,68 +153,50 @@ export const Login: React.FC = () => {
             </button>
           </form>
 
-          {/* Quick Demo Role Logins */}
-          <div className="pt-4 border-t border-slate-100">
-            <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2.5 text-center">
-              Akses Cepat Pengujian Peran (Demo)
+          {/* Dynamic Registered Users Quick Access */}
+          {users.length > 0 && (
+            <div className="pt-4 border-t border-slate-100">
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2.5 text-center">
+                Pilih Akun Terdaftar (Masuk Cepat)
+              </div>
+
+              <div className="space-y-2 text-xs">
+                {users
+                  .filter((u) => u.status === 'Active')
+                  .map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => {
+                        setCurrentUser(u);
+                        showToast('success', 'Login Berhasil', `Masuk sebagai ${u.fullName} (${u.role})`);
+                      }}
+                      className="w-full p-2.5 rounded-xl border border-slate-200 hover:border-[#064e3b] hover:bg-emerald-50/50 transition flex items-center justify-between text-left group"
+                    >
+                      <div>
+                        <div className="font-bold text-slate-900 group-hover:text-[#064e3b]">
+                          {u.fullName}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {u.employeeId} • {u.authorizedLocation}
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          u.role === 'ADMIN'
+                            ? 'bg-emerald-900 text-white'
+                            : u.role === 'LOGISTIK'
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                            : 'bg-amber-100 text-amber-900 border border-amber-300'
+                        }`}
+                      >
+                        {u.role}
+                      </span>
+                    </button>
+                  ))}
+              </div>
             </div>
-
-            <div className="grid grid-cols-1 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('ADMIN')}
-                className="w-full p-2.5 rounded-xl border border-slate-200 hover:border-emerald-700 hover:bg-emerald-50/50 transition flex items-center justify-between text-left group"
-              >
-                <div>
-                  <div className="font-bold text-slate-900 group-hover:text-[#064e3b]">
-                    Andi Pratama, S.T.
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    EMP-001 • Semua Lokasi
-                  </div>
-                </div>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-900 text-white uppercase">
-                  ADMIN
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('LOGISTIK')}
-                className="w-full p-2.5 rounded-xl border border-slate-200 hover:border-emerald-600 hover:bg-emerald-50/50 transition flex items-center justify-between text-left group"
-              >
-                <div>
-                  <div className="font-bold text-slate-900 group-hover:text-emerald-800">
-                    Budi Santoso
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    EMP-014 • Gudang Utama CGK
-                  </div>
-                </div>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 uppercase">
-                  LOGISTIK
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('SITE HEAD')}
-                className="w-full p-2.5 rounded-xl border border-slate-200 hover:border-amber-600 hover:bg-amber-50/50 transition flex items-center justify-between text-left group"
-              >
-                <div>
-                  <div className="font-bold text-slate-900 group-hover:text-amber-800">
-                    Ir. Hendra Wijaya, M.M.
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    EMP-003 • Hub Soekarno-Hatta (CGK)
-                  </div>
-                </div>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 uppercase">
-                  SITE HEAD
-                </span>
-              </button>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Footer */}
