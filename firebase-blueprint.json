@@ -1,0 +1,181 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with role-based access permissions and employee details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "employeeId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "LOGISTIK", "SITE HEAD"] },
+        "authorizedLocation": { "type": "string" },
+        "status": { "type": "string", "enum": ["Active", "Inactive"] },
+        "createdDate": { "type": "string" },
+        "lastLogin": { "type": "string" }
+      },
+      "required": ["id", "employeeId", "fullName", "email", "role", "authorizedLocation", "status"]
+    },
+    "Material": {
+      "title": "Material",
+      "description": "Material Master catalog item",
+      "type": "object",
+      "properties": {
+        "materialCode": { "type": "string" },
+        "materialName": { "type": "string" },
+        "categoryId": { "type": "string" },
+        "categoryName": { "type": "string" },
+        "unit": { "type": "string" },
+        "minimumStock": { "type": "number" },
+        "reorderPoint": { "type": "number" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["materialCode", "materialName", "categoryId", "unit", "minimumStock", "isActive"]
+    },
+    "Location": {
+      "title": "Location",
+      "description": "Warehouse and operational hub location",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "picName": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "name", "type", "isActive"]
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "Inventory stock balance at a location",
+      "type": "object",
+      "properties": {
+        "materialId": { "type": "string" },
+        "materialCode": { "type": "string" },
+        "materialName": { "type": "string" },
+        "locationId": { "type": "string" },
+        "locationName": { "type": "string" },
+        "availableStock": { "type": "number" },
+        "unit": { "type": "string" },
+        "minimumStock": { "type": "number" }
+      },
+      "required": ["materialCode", "materialName", "locationId", "availableStock", "unit"]
+    },
+    "GoodsReceipt": {
+      "title": "GoodsReceipt",
+      "description": "Incoming goods receiving transaction",
+      "type": "object",
+      "properties": {
+        "receiptNumber": { "type": "string" },
+        "receiptDate": { "type": "string" },
+        "sourceSupplier": { "type": "string" },
+        "referenceDocument": { "type": "string" },
+        "materialCode": { "type": "string" },
+        "materialName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "destinationLocationId": { "type": "string" },
+        "recordedBy": { "type": "string" }
+      },
+      "required": ["receiptNumber", "receiptDate", "quantity", "recordedBy"]
+    },
+    "GoodsIssue": {
+      "title": "GoodsIssue",
+      "description": "Goods disbursement transaction",
+      "type": "object",
+      "properties": {
+        "issueNumber": { "type": "string" },
+        "requestDate": { "type": "string" },
+        "requestingUnit": { "type": "string" },
+        "materialCode": { "type": "string" },
+        "materialName": { "type": "string" },
+        "requestedQuantity": { "type": "number" },
+        "approvedQuantity": { "type": "number" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "requestedBy": { "type": "string" }
+      },
+      "required": ["issueNumber", "requestDate", "requestedQuantity", "status", "requestedBy"]
+    },
+    "StockTransfer": {
+      "title": "StockTransfer",
+      "description": "Inter-warehouse stock transfer record",
+      "type": "object",
+      "properties": {
+        "transferNumber": { "type": "string" },
+        "requestDate": { "type": "string" },
+        "originLocationId": { "type": "string" },
+        "destinationLocationId": { "type": "string" },
+        "materialCode": { "type": "string" },
+        "quantity": { "type": "number" },
+        "status": { "type": "string", "enum": ["PENDING", "IN_TRANSIT", "COMPLETED"] }
+      },
+      "required": ["transferNumber", "originLocationId", "destinationLocationId", "quantity", "status"]
+    },
+    "StockOpname": {
+      "title": "StockOpname",
+      "description": "Physical stock count verification record",
+      "type": "object",
+      "properties": {
+        "opnameNumber": { "type": "string" },
+        "opnameDate": { "type": "string" },
+        "locationId": { "type": "string" },
+        "status": { "type": "string", "enum": ["DRAFT", "SUBMITTED", "APPROVED", "REJECTED"] }
+      },
+      "required": ["opnameNumber", "opnameDate", "locationId", "status"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and operational audit trail entry",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "role": { "type": "string" },
+        "action": { "type": "string" },
+        "module": { "type": "string" },
+        "details": { "type": "string" }
+      },
+      "required": ["timestamp", "userId", "action", "module", "details"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Authorized user profile and roles"
+    },
+    "/materials/{materialId}": {
+      "schema": { "$ref": "#/entities/Material" },
+      "description": "Master Data Material catalog"
+    },
+    "/locations/{locationId}": {
+      "schema": { "$ref": "#/entities/Location" },
+      "description": "Master Data Locations"
+    },
+    "/inventory/{inventoryId}": {
+      "schema": { "$ref": "#/entities/InventoryItem" },
+      "description": "Stock balances per location"
+    },
+    "/goodsReceipts/{receiptId}": {
+      "schema": { "$ref": "#/entities/GoodsReceipt" },
+      "description": "Goods receipt transactions"
+    },
+    "/goodsIssues/{issueId}": {
+      "schema": { "$ref": "#/entities/GoodsIssue" },
+      "description": "Goods issue transactions"
+    },
+    "/stockTransfers/{transferId}": {
+      "schema": { "$ref": "#/entities/StockTransfer" },
+      "description": "Inter-warehouse stock transfer records"
+    },
+    "/stockOpnames/{opnameId}": {
+      "schema": { "$ref": "#/entities/StockOpname" },
+      "description": "Stock opname counts"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable audit trail records"
+    }
+  }
+}

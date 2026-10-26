@@ -1,7 +1,29 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  sendPasswordResetEmail,
+  signInWithPopup,
+  GoogleAuthProvider,
+  User as FirebaseUser,
+} from 'firebase/auth';
+import {
+  collection,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+} from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType, testFirestoreConnection } from '../firebase';
+import {
   UserAccount,
   UserRole,
+  AccountStatus,
   MaterialMaster,
   InventoryBalance,
   MasterCategory,
@@ -65,6 +87,22 @@ interface AppContextType {
   currentUser: UserAccount | null;
   setCurrentUser: (user: UserAccount | null) => void;
   switchRole: (role: UserRole) => void;
+  authLoading: boolean;
+  firebaseUser: FirebaseUser | null;
+
+  // Firebase Authentication operations
+  loginWithEmail: (email: string, pass: string) => Promise<{ success: boolean; message?: string }>;
+  loginWithGoogle: () => Promise<{ success: boolean; message?: string }>;
+  registerWithEmail: (
+    email: string,
+    pass: string,
+    fullName: string,
+    employeeId: string,
+    location: string
+  ) => Promise<{ success: boolean; message?: string }>;
+  resetPassword: (email: string) => Promise<{ success: boolean; message?: string }>;
+  logout: () => Promise<void>;
+
   // Core Collections
   users: UserAccount[];
   materials: MaterialMaster[];
@@ -263,14 +301,143 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [suppliers, setSuppliers] = useState<MasterSupplier[]>(() => loadState('suppliers', INITIAL_SUPPLIERS));
   const [settings, setSettings] = useState<SystemSettings>(() => loadState('settings', INITIAL_SETTINGS));
 
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
-    const savedUserId = localStorage.getItem(STORAGE_KEY_PREFIX + 'current_user_id');
-    const found = users.find((u) => u.id === savedUserId);
-    return found || users[0] || null;
-  });
+  // Strictly start unauthenticated without falling back to users[0] or default Admin
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
 
   const [activeNav, setActiveNav] = useState<string>('Dashboard');
   const [toasts, setToasts] = useState<NotificationToast[]>([]);
+
+  // Monitor Firebase Authentication state securely
+  useEffect(() => {
+    testFirestoreConnection();
+
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      setFirebaseUser(fbUser);
+      if (fbUser) {
+        try {
+          const userDocRef = doc(db, 'users', fbUser.uid);
+          const snap = await getDoc(userDocRef);
+          if (snap.exists()) {
+            const data = snap.data() as UserAccount;
+            setCurrentUser(data);
+            const now = getJakartaTimestamp();
+            updateDoc(userDocRef, { lastLogin: now }).catch(() => {});
+          } else {
+            // Check if user is the authorized bootstrapped admin
+            const isOwnerAdmin =
+              fbUser.email === 'wijaya.ihsan@gmail.com' ||
+              fbUser.email === 'admin@pt-iassupport.co.id';
+
+            const newProfile: UserAccount = {
+              id: fbUser.uid,
+              employeeId: isOwnerAdmin ? 'EMP-001' : 'EMP-' + fbUser.uid.slice(0, 4).toUpperCase(),
+              fullName:
+                fbUser.displayName ||
+                (isOwnerAdmin ? 'Administrator PT IAS Support' : fbUser.email?.split('@')[0] || 'Personil Logistik'),
+              email: fbUser.email || '',
+              role: isOwnerAdmin ? 'ADMIN' : 'LOGISTIK',
+              authorizedLocation: 'Semua Lokasi Gudang',
+              status: 'Active',
+              createdDate: getJakartaTimestamp(),
+              lastLogin: getJakartaTimestamp(),
+            };
+
+            await setDoc(userDocRef, newProfile);
+            setCurrentUser(newProfile);
+          }
+        } catch (err) {
+          console.error('Error fetching user profile from Firestore:', err);
+          const isOwnerAdmin =
+            fbUser.email === 'wijaya.ihsan@gmail.com' ||
+            fbUser.email === 'admin@pt-iassupport.co.id';
+          setCurrentUser({
+            id: fbUser.uid,
+            employeeId: isOwnerAdmin ? 'EMP-001' : 'EMP-STAFF',
+            fullName: fbUser.displayName || fbUser.email || 'Personil Logistik',
+            email: fbUser.email || '',
+            role: isOwnerAdmin ? 'ADMIN' : 'LOGISTIK',
+            authorizedLocation: 'Semua Lokasi Gudang',
+            status: 'Active',
+            createdDate: getJakartaTimestamp(),
+            lastLogin: getJakartaTimestamp(),
+          });
+        }
+      } else {
+        setCurrentUser(null);
+        localStorage.removeItem(STORAGE_KEY_PREFIX + 'current_user_id');
+      }
+      setAuthLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Synchronize Firestore collections in real-time when authenticated
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const bindSync = <T,>(
+      colName: string,
+      setter: React.Dispatch<React.SetStateAction<T[]>>,
+      defaultSeed?: T[]
+    ) => {
+      const q = collection(db, colName);
+      return onSnapshot(
+        q,
+        (snap) => {
+          if (!snap.empty) {
+            const items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as T));
+            setter(items);
+          } else if (defaultSeed && defaultSeed.length > 0) {
+            defaultSeed.forEach((item: any) => {
+              if (item.id) {
+                setDoc(doc(db, colName, item.id), item).catch(() => {});
+              }
+            });
+          }
+        },
+        (error) => {
+          console.warn(`Firestore sync [${colName}] warning:`, error.message);
+        }
+      );
+    };
+
+    const unsubMaterials = bindSync('materials', setMaterials);
+    const unsubLocations = bindSync('locations', setLocations);
+    const unsubCategories = bindSync('categories', setCategories, INITIAL_CATEGORIES);
+    const unsubUnits = bindSync('units', setUnits, INITIAL_UNITS);
+    const unsubInventory = bindSync('inventory', setInventory);
+    const unsubReceipts = bindSync('goodsReceipts', setGoodsReceipts);
+    const unsubIssues = bindSync('goodsIssues', setGoodsIssues);
+    const unsubTransfers = bindSync('stockTransfers', setStockTransfers);
+    const unsubOpnames = bindSync('stockOpnames', setStockOpnames);
+    const unsubConsumptions = bindSync('consumptions', setConsumptions);
+    const unsubTrolleys = bindSync('morganTrolleys', setMorganTrolleys);
+    const unsubRequests = bindSync('supplyRequests', setSupplyRequests);
+    const unsubApprovals = bindSync('approvals', setApprovals);
+    const unsubAudit = bindSync('auditLogs', setAuditLogs);
+    const unsubUsers = bindSync('users', setUsers);
+
+    return () => {
+      unsubMaterials();
+      unsubLocations();
+      unsubCategories();
+      unsubUnits();
+      unsubInventory();
+      unsubReceipts();
+      unsubIssues();
+      unsubTransfers();
+      unsubOpnames();
+      unsubConsumptions();
+      unsubTrolleys();
+      unsubRequests();
+      unsubApprovals();
+      unsubAudit();
+      unsubUsers();
+    };
+  }, [currentUser?.id]);
 
   // Derived active dropdown lists (Rule: Inactive materials and locations cannot be selected in new transactions)
   const activeMaterials = useMemo(() => materials.filter((m) => m.isActive), [materials]);
@@ -278,7 +445,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const activeCategories = useMemo(() => categories.filter((c) => c.isActive), [categories]);
   const activeUnits = useMemo(() => units.filter((u) => u.isActive), [units]);
 
-  // Sync to local storage
+  // Sync to local storage for offline resilience
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'users', JSON.stringify(users)); }, [users]);
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'materials', JSON.stringify(materials)); }, [materials]);
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'locations', JSON.stringify(locations)); }, [locations]);
@@ -298,6 +465,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem(STORAGE_KEY_PREFIX + 'current_user_id', currentUser.id);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'current_user_id');
     }
   }, [currentUser]);
 
@@ -327,6 +496,131 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ipAddress: '192.168.10.' + (Math.floor(Math.random() * 50) + 10),
     };
     setAuditLogs((prev) => [newLog, ...prev]);
+    setDoc(doc(db, 'auditLogs', newLog.id), newLog).catch(() => {});
+  };
+
+  // Firebase Authentication Methods
+  const loginWithEmail = async (
+    emailOrEmployeeId: string,
+    pass: string
+  ): Promise<{ success: boolean; message?: string }> => {
+    try {
+      let targetEmail = emailOrEmployeeId.trim();
+
+      if (!targetEmail.includes('@')) {
+        const foundUser = users.find(
+          (u) => u.employeeId.toLowerCase() === targetEmail.toLowerCase()
+        );
+        if (foundUser?.email) {
+          targetEmail = foundUser.email;
+        } else {
+          return {
+            success: false,
+            message: `Employee ID "${emailOrEmployeeId}" tidak ditemukan atau belum memiliki email terdaftar.`,
+          };
+        }
+      }
+
+      await signInWithEmailAndPassword(auth, targetEmail, pass);
+      showToast('success', 'Autentikasi Berhasil', 'Selamat datang di PT IAS Support — Logistics Control Tower.');
+      return { success: true };
+    } catch (err: any) {
+      console.error('Firebase sign-in error:', err);
+      let msg = 'Gagal masuk. Periksa kembali email dan kata sandi Anda.';
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+        msg = 'Kredensial tidak valid. Email atau kata sandi tidak cocok.';
+      } else if (err.code === 'auth/wrong-password') {
+        msg = 'Kata sandi yang Anda masukkan salah.';
+      } else if (err.code === 'auth/invalid-email') {
+        msg = 'Format alamat email tidak valid.';
+      } else if (err.code === 'auth/too-many-requests') {
+        msg = 'Terlalu banyak percobaan gagal. Silakan coba beberapa saat lagi.';
+      }
+      return { success: false, message: msg };
+    }
+  };
+
+  const loginWithGoogle = async (): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      showToast('success', 'Login Google Berhasil', 'Autentikasi SSO berhasil diverifikasi.');
+      return { success: true };
+    } catch (err: any) {
+      console.error('Google sign-in error:', err);
+      return {
+        success: false,
+        message: err.message || 'Gagal masuk dengan akun Google.',
+      };
+    }
+  };
+
+  const registerWithEmail = async (
+    email: string,
+    pass: string,
+    fullName: string,
+    employeeId: string,
+    location: string
+  ): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+      const isOwnerAdmin =
+        email.trim() === 'wijaya.ihsan@gmail.com' ||
+        email.trim() === 'admin@pt-iassupport.co.id';
+
+      const newProfile: UserAccount = {
+        id: cred.user.uid,
+        employeeId: employeeId || 'EMP-' + cred.user.uid.slice(0, 4).toUpperCase(),
+        fullName: fullName || email.split('@')[0],
+        email: email.trim(),
+        role: isOwnerAdmin ? 'ADMIN' : 'LOGISTIK',
+        authorizedLocation: location || 'Gudang Utama CGK',
+        status: 'Active',
+        createdDate: getJakartaTimestamp(),
+        lastLogin: getJakartaTimestamp(),
+      };
+
+      await setDoc(doc(db, 'users', cred.user.uid), newProfile);
+      setCurrentUser(newProfile);
+      showToast('success', 'Registrasi Berhasil', `Akun ${newProfile.fullName} berhasil dibuat.`);
+      return { success: true };
+    } catch (err: any) {
+      console.error('Firebase register error:', err);
+      let msg = err.message || 'Pendaftaran gagal.';
+      if (err.code === 'auth/email-already-in-use') {
+        msg = 'Alamat email ini sudah terdaftar dalam sistem.';
+      } else if (err.code === 'auth/weak-password') {
+        msg = 'Kata sandi terlalu lemah. Minimal 6 karakter.';
+      }
+      return { success: false, message: msg };
+    }
+  };
+
+  const resetPassword = async (
+    email: string
+  ): Promise<{ success: boolean; message?: string }> => {
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      return { success: true };
+    } catch (err: any) {
+      console.error('Password reset email error:', err);
+      return {
+        success: false,
+        message: err.message || 'Gagal mengirim email penyetelan ulang sandi.',
+      };
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+    setCurrentUser(null);
+    setFirebaseUser(null);
+    localStorage.removeItem(STORAGE_KEY_PREFIX + 'current_user_id');
+    showToast('info', 'Sesi Berakhir', 'Anda telah keluar dari sistem.');
   };
 
   const can = (action: PermissionAction): { allowed: boolean; reason?: string } => {
@@ -366,14 +660,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const switchRole = (role: UserRole) => {
-    const targetUser = users.find((u) => u.role === role && u.status === 'Active');
-    if (targetUser) {
-      setCurrentUser(targetUser);
-      showToast('info', 'Beralih Peran Pengguna', `Sekarang bertindak sebagai ${targetUser.fullName} (${role})`);
-      logAudit('ROLE_SWITCH', 'Autentikasi', `Beralih peran aktif ke ${role} (${targetUser.fullName})`);
-    } else {
-      showToast('error', 'Gagal Beralih Peran', `Tidak ditemukan akun aktif untuk peran ${role}`);
+    if (!currentUser) return;
+    // Security check: Only an authentic Administrator in Firestore can switch preview roles
+    if (currentUser.role !== 'ADMIN') {
+      showToast('error', 'Akses Terbatas', 'Hanya Administrator yang memiliki wewenang menguji peran antarmuka.');
+      return;
     }
+    setCurrentUser((prev) => (prev ? { ...prev, role } : null));
+    showToast('info', 'Mode Pengujian Peran', `Antarmuka dialihkan ke tampilan peran: ${role}`);
   };
 
   // ----------------------------------------------------
@@ -1845,6 +2139,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setUsers((prev) => [...prev, newUser]);
+    setDoc(doc(db, 'users', newUser.id), newUser).catch((err) => {
+      console.warn('Firestore user save warning:', err);
+    });
     logAudit('ACCOUNT_CREATED', 'Account Management', `Admin membuat akun baru: ${newUser.fullName} (${newUser.employeeId}), Peran: ${newUser.role}`);
     showToast('success', 'Akun Berhasil Dibuat', `Pengguna ${newUser.fullName} telah terdaftar.`);
     return true;
@@ -1857,7 +2154,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...updates } : u)));
+    setUsers((prev) => {
+      const updated = prev.map((u) => (u.id === id ? { ...u, ...updates } : u));
+      const target = updated.find((u) => u.id === id);
+      if (target) {
+        setDoc(doc(db, 'users', id), target, { merge: true }).catch(() => {});
+      }
+      return updated;
+    });
+
     if (currentUser?.id === id) {
       setCurrentUser((prev) => (prev ? { ...prev, ...updates } : null));
     }
@@ -1882,10 +2187,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    const nextStatus = target.status === 'Active' ? 'Inactive' : 'Active';
-    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, status: nextStatus } : u)));
+    const nextStatus: AccountStatus = target.status === 'Active' ? 'Inactive' : 'Active';
+    setUsers((prev) => {
+      const updated = prev.map((u) => (u.id === id ? { ...u, status: nextStatus } : u));
+      const updatedTarget = updated.find((u) => u.id === id);
+      if (updatedTarget) {
+        setDoc(doc(db, 'users', id), updatedTarget, { merge: true }).catch(() => {});
+      }
+      return updated;
+    });
+
     logAudit('ACCOUNT_STATUS_TOGGLED', 'Account Management', `Status akun ${target.fullName} diubah ke ${nextStatus}`);
-    showToast('info', 'Status Akun Diubah', `Akun ${target.fullName} sekarang ${nextStatus}.`);
+    showToast('info', 'Status Akun Diperbarui', `Akun ${target.fullName} sekarang ${nextStatus}.`);
     return true;
   };
 
@@ -1911,12 +2224,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
       return;
     }
-    setSettings((prev) => ({ ...prev, ...newSettings }));
+    setSettings((prev) => {
+      const updated = { ...prev, ...newSettings };
+      setDoc(doc(db, 'settings', 'global'), updated).catch(() => {});
+      return updated;
+    });
     logAudit('SETTINGS_UPDATED', 'Pengaturan', 'Administrator memperbarui konfigurasi sistem');
     showToast('success', 'Pengaturan Disimpan', 'Konfigurasi sistem berhasil diperbarui.');
   };
 
   const resetToInitialData = () => {
+    const currentAuthedUser = currentUser;
     localStorage.clear();
     setUsers(INITIAL_USERS);
     setMaterials(INITIAL_MATERIALS);
@@ -1936,15 +2254,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setRequestingUnits(INITIAL_REQUESTING_UNITS);
     setSuppliers(INITIAL_SUPPLIERS);
     setSettings(INITIAL_SETTINGS);
-    setCurrentUser(INITIAL_USERS[0]);
-    showToast('info', 'Reset Berhasil', 'Data sistem telah dikembalikan ke kondisi awal PT IAS Support.');
+    setCurrentUser(currentAuthedUser);
+    showToast('info', 'Reset Berhasil', 'Data demo sistem telah diatur ulang tanpa memutus sesi login aktif.');
   };
 
   return (
     <AppContext.Provider
       value={{
+        authLoading,
+        firebaseUser,
         currentUser,
         setCurrentUser,
+        loginWithEmail,
+        loginWithGoogle,
+        registerWithEmail,
+        resetPassword,
+        logout,
         switchRole,
         users,
         materials,

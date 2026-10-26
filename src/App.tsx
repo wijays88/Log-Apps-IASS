@@ -19,16 +19,36 @@ import { AuditTrail } from './pages/AuditTrail';
 import { ProfilAkun } from './pages/ProfilAkun';
 import { Pengaturan } from './pages/Pengaturan';
 import { Login } from './pages/Login';
+import { AccessDenied } from './components/AccessDenied';
 import { ExcelImportExportModal } from './components/ExcelImportExportModal';
 import { ImportModuleType } from './utils/excelUtils';
+import { Loader2 } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
-  const { currentUser, activeNav } = useApp();
+  const { currentUser, activeNav, authLoading } = useApp();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [globalExcelModalOpen, setGlobalExcelModalOpen] = useState(false);
   const [globalExcelModule, setGlobalExcelModule] = useState<ImportModuleType>('MATERIAL_MASTER');
 
-  // If user is logged out, show Login page
+  // Display clean enterprise loading screen while Firebase verifies active session
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white select-none">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center font-bold text-2xl shadow-xl shadow-emerald-900/40 mb-5">
+          IAS
+        </div>
+        <div className="flex items-center gap-2.5 text-emerald-400 font-medium text-sm mb-2">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          <span>Memverifikasi Sesi Autentikasi...</span>
+        </div>
+        <p className="text-xs text-slate-400 font-mono">
+          PT IAS SUPPORT — LOGISTICS CONTROL TOWER
+        </p>
+      </div>
+    );
+  }
+
+  // If user is logged out or unauthenticated, show Login page
   if (!currentUser) {
     return <Login />;
   }
@@ -48,18 +68,27 @@ const MainLayout: React.FC = () => {
       case 'Stock Opname':
         return <StockOpname />;
       case 'Approval Center':
+        if (currentUser.role !== 'ADMIN' && currentUser.role !== 'SITE HEAD') {
+          return <AccessDenied module="Approval Center" requiredRole="ADMIN / SITE HEAD" />;
+        }
         return <ApprovalCenter />;
       case 'Laporan':
         return <Laporan />;
       case 'Master Data':
         return <MasterData />;
       case 'Account Management':
+        if (currentUser.role !== 'ADMIN') {
+          return <AccessDenied module="Account Management" requiredRole="ADMIN" />;
+        }
         return <AccountManagement />;
       case 'Audit Trail':
         return <AuditTrail />;
       case 'Profil Akun':
         return <ProfilAkun />;
       case 'Pengaturan':
+        if (currentUser.role !== 'ADMIN') {
+          return <AccessDenied module="Pengaturan Sistem" requiredRole="ADMIN" />;
+        }
         return <Pengaturan />;
       default:
         return <Dashboard />;

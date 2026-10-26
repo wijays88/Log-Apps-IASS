@@ -1,0 +1,169 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default-deny catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isCurrentUser(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'wijaya.ihsan@gmail.com' ||
+        request.auth.token.email == 'admin@pt-iassupport.co.id'
+      );
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isSignedIn() && hasUserDoc() && getUserData().role == 'ADMIN' && getUserData().status == 'Active'
+      );
+    }
+
+    function isLogistik() {
+      return isAdmin() || (
+        isSignedIn() && hasUserDoc() && getUserData().role == 'LOGISTIK' && getUserData().status == 'Active'
+      );
+    }
+
+    function isSiteHead() {
+      return isAdmin() || (
+        isSignedIn() && hasUserDoc() && getUserData().role == 'SITE HEAD' && getUserData().status == 'Active'
+      );
+    }
+
+    function isActiveStaff() {
+      return isAdmin() || (
+        isSignedIn() && hasUserDoc() && getUserData().status == 'Active'
+      );
+    }
+
+    // User Accounts and Profiles
+    match /users/{userId} {
+      allow get: if isCurrentUser(userId) || isAdmin();
+      allow list: if isAdmin();
+      // Allow self-registration only with non-admin role, or allow full control to admin
+      allow create: if isAdmin() || (
+        isCurrentUser(userId) &&
+        request.resource.data.role != 'ADMIN' &&
+        request.resource.data.status == 'Active'
+      );
+      allow update: if isAdmin() || (
+        isCurrentUser(userId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastLogin', 'fullName'])
+      );
+      allow delete: if isAdmin() && !isCurrentUser(userId);
+    }
+
+    // Master Data: Materials, Locations, Categories, Units
+    match /materials/{id} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /locations/{id} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /categories/{id} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    match /units/{id} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    // Inventory Ledger & Physical Balances
+    match /inventory/{id} {
+      allow read: if isActiveStaff();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Operational Transactions
+    match /goodsReceipts/{id} {
+      allow read: if isActiveStaff();
+      allow create: if isLogistik() || isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    match /goodsIssues/{id} {
+      allow read: if isActiveStaff();
+      allow create: if isLogistik() || isAdmin();
+      allow update: if isSiteHead() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /stockTransfers/{id} {
+      allow read: if isActiveStaff();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /stockOpnames/{id} {
+      allow read: if isActiveStaff();
+      allow create: if isLogistik() || isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /consumptions/{id} {
+      allow read: if isActiveStaff();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /morganTrolleys/{id} {
+      allow read: if isActiveStaff();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /supplyRequests/{id} {
+      allow read: if isActiveStaff();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /approvals/{id} {
+      allow read: if isActiveStaff();
+      allow create: if isLogistik() || isAdmin();
+      allow update: if isSiteHead() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Audit Trail: Append-Only by Active Staff, Read by Admins and Site Heads, Never modified or deleted
+    match /auditLogs/{id} {
+      allow read: if isAdmin() || isSiteHead();
+      allow create: if isActiveStaff();
+      allow update, delete: if false;
+    }
+
+    // System Settings: Admin only
+    match /settings/{id} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+  }
+}

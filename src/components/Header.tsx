@@ -21,10 +21,9 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ onToggleMobileSidebar, onOpenExcelModal }) => {
-  const { currentUser, switchRole, approvals, setActiveNav, resetToInitialData, setCurrentUser } = useApp();
+  const { currentUser, approvals, setActiveNav, resetToInitialData, logout } = useApp();
   const [currentTime, setCurrentTime] = useState<string>('');
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
-  const [roleSwitcherOpen, setRoleSwitcherOpen] = useState(false);
 
   useEffect(() => {
     const updateTime = () => {
@@ -111,91 +110,24 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileSidebar, onOpenExc
             </span>
           </div>
 
-          {/* Quick Role Simulation Switcher (Vital for testing the 3 distinct roles easily) */}
-          <div className="relative">
-            <button
-              onClick={() => setRoleSwitcherOpen(!roleSwitcherOpen)}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border transition shadow-2xs hover:opacity-90"
-              style={{
-                backgroundColor: currentUser?.role === 'ADMIN' ? '#064e3b' : currentUser?.role === 'SITE HEAD' ? '#78350f' : '#047857',
-                color: '#ffffff',
-                borderColor: 'transparent',
-              }}
-              title="Ganti peran pengguna untuk menguji izin fungsional"
-            >
-              <Shield className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">Peran:</span>
-              <span className="uppercase">{currentUser?.role}</span>
-              <ChevronDown className="w-3 h-3 ml-0.5" />
-            </button>
-
-            {roleSwitcherOpen && (
-              <div
-                className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-200 p-2 z-50 text-xs animate-in fade-in slide-in-from-top-2"
-                onClick={() => setRoleSwitcherOpen(false)}
-              >
-                <div className="px-2.5 py-1.5 font-bold text-slate-800 border-b border-slate-100 flex items-center justify-between">
-                  <span>Uji Peran Pengguna (RBAC)</span>
-                  <span className="text-[10px] text-emerald-600 font-normal">3 Hak Akses</span>
-                </div>
-
-                <div className="mt-1 space-y-1">
-                  <button
-                    onClick={() => switchRole('ADMIN')}
-                    className={`w-full text-left p-2 rounded-lg transition flex items-start gap-2 ${
-                      currentUser?.role === 'ADMIN' ? 'bg-emerald-50 text-emerald-950 font-bold' : 'hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <div className="w-2 h-2 rounded-full bg-emerald-700 mt-1.5 shrink-0" />
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-semibold">ADMIN</span>
-                        <span className="text-[10px] px-1 bg-emerald-200 text-emerald-900 rounded">Penuh</span>
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-normal">
-                        Kewenangan mutasi, persetujuan, kelola akun, & master data.
-                      </div>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => switchRole('LOGISTIK')}
-                    className={`w-full text-left p-2 rounded-lg transition flex items-start gap-2 ${
-                      currentUser?.role === 'LOGISTIK' ? 'bg-emerald-50 text-emerald-950 font-bold' : 'hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <div className="w-2 h-2 rounded-full bg-emerald-500 mt-1.5 shrink-0" />
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-semibold">LOGISTIK</span>
-                        <span className="text-[10px] px-1 bg-emerald-100 text-emerald-800 rounded">Operasional</span>
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-normal">
-                        Input barang masuk, permohonan keluar, transfer, & opname.
-                      </div>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => switchRole('SITE HEAD')}
-                    className={`w-full text-left p-2 rounded-lg transition flex items-start gap-2 ${
-                      currentUser?.role === 'SITE HEAD' ? 'bg-amber-50 text-amber-950 font-bold' : 'hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <div className="w-2 h-2 rounded-full bg-amber-500 mt-1.5 shrink-0" />
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-semibold">SITE HEAD</span>
-                        <span className="text-[10px] px-1 bg-amber-100 text-amber-800 rounded font-semibold">Read-Only</span>
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-normal">
-                        Monitoring laporan, posisi stok, & status transaksi tanpa mutasi.
-                      </div>
-                    </div>
-                  </button>
-                </div>
-              </div>
-            )}
+          {/* Authenticated Role Badge (Enforced from Firestore, immutable) */}
+          <div
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg shadow-2xs border select-none"
+            style={{
+              backgroundColor:
+                currentUser?.role === 'ADMIN'
+                  ? '#064e3b'
+                  : currentUser?.role === 'SITE HEAD'
+                  ? '#78350f'
+                  : '#047857',
+              color: '#ffffff',
+              borderColor: 'transparent',
+            }}
+            title={`Peran Pengguna Terverifikasi: ${currentUser?.role || 'LOGISTIK'}`}
+          >
+            <Shield className="w-3.5 h-3.5 text-emerald-200" />
+            <span className="hidden xs:inline text-emerald-100/90 font-medium">Peran:</span>
+            <span className="uppercase font-bold tracking-wide">{currentUser?.role || 'LOGISTIK'}</span>
           </div>
 
           {/* Universal Excel Hub Trigger */}
@@ -274,19 +206,21 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileSidebar, onOpenExc
                     <span>Pengaturan Sistem</span>
                   </button>
 
-                  <button
-                    onClick={resetToInitialData}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-amber-700 hover:bg-amber-50 rounded-lg transition"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Reset Data Demo PT IAS</span>
-                  </button>
+                  {currentUser?.role === 'ADMIN' && (
+                    <button
+                      onClick={resetToInitialData}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-amber-700 hover:bg-amber-50 rounded-lg transition"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Reset Data Demo PT IAS</span>
+                    </button>
+                  )}
 
                   <div className="border-t border-slate-100 my-1"></div>
 
                   <button
-                    onClick={() => {
-                      setCurrentUser(null);
+                    onClick={async () => {
+                      await logout();
                     }}
                     className="w-full flex items-center gap-2 px-3 py-2 text-rose-600 hover:bg-rose-50 rounded-lg transition font-medium"
                   >
