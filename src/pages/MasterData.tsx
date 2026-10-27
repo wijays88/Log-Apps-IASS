@@ -24,6 +24,9 @@ import {
   FolderTree,
   Tag,
   Shield,
+  Loader2,
+  RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
 import { ExcelImportExportModal } from '../components/ExcelImportExportModal';
@@ -45,10 +48,12 @@ export const MasterData: React.FC = () => {
     addMaterial,
     updateMaterial,
     toggleMaterialStatus,
+    deleteMaterial,
     locations,
     addLocation,
     updateLocation,
     toggleLocationStatus,
+    deleteLocation,
     categories,
     saveCategory,
     toggleCategoryStatus,
@@ -61,10 +66,21 @@ export const MasterData: React.FC = () => {
     currentUser,
     can,
     showToast,
+    syncLoading,
+    syncErrors,
+    seedDemoData,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<MasterTab>('MATERIALS');
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Delete modals and submission states
+  const [materialToDelete, setMaterialToDelete] = useState<MaterialMaster | null>(null);
+  const [locationToDelete, setLocationToDelete] = useState<MasterLocation | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isSubmittingMat, setIsSubmittingMat] = useState(false);
+  const [isSubmittingLoc, setIsSubmittingLoc] = useState(false);
+  const [isSeeding, setIsSeeding] = useState(false);
 
   // Filters for Materials
   const [filterCat, setFilterCat] = useState('ALL');
@@ -195,62 +211,67 @@ export const MasterData: React.FC = () => {
   };
 
   // Submit Material
-  const handleSubmitMaterial = (e: React.FormEvent) => {
+  const handleSubmitMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
     setCodeDuplicateError('');
+    setIsSubmittingMat(true);
 
     const targetCat = categories.find((c) => c.id === matCategoryId);
     const targetUnit = units.find((u) => u.id === matUnitId);
     const targetLoc = locations.find((l) => l.id === matDefaultLocId);
 
-    if (editingMaterialId) {
-      const result = updateMaterial(editingMaterialId, {
-        materialCode: matCode.trim().toUpperCase(),
-        materialName: matName.trim(),
-        categoryId: matCategoryId,
-        categoryName: targetCat?.name || 'General',
-        subcategoryId: matSubcategoryId.trim() || undefined,
-        unitId: matUnitId,
-        unit: targetUnit?.symbol || 'Pcs',
-        minimumStock: Number(matMinStock),
-        reorderPoint: Number(matRop),
-        defaultLocationId: matDefaultLocId || undefined,
-        defaultLocationName: targetLoc?.name || undefined,
-        variantAttributes: matVariantAttrs.trim() || undefined,
-        variantValue: matVariantVal.trim() || undefined,
-        unitCost: Number(matUnitCost),
-        description: matDescription.trim(),
-      });
-      if (result.success) {
-        setMaterialModalOpen(false);
+    try {
+      if (editingMaterialId) {
+        const result = await updateMaterial(editingMaterialId, {
+          materialCode: matCode.trim().toUpperCase(),
+          materialName: matName.trim(),
+          categoryId: matCategoryId,
+          categoryName: targetCat?.name || 'General',
+          subcategoryId: matSubcategoryId.trim() || undefined,
+          unitId: matUnitId,
+          unit: targetUnit?.symbol || 'Pcs',
+          minimumStock: Number(matMinStock),
+          reorderPoint: Number(matRop),
+          defaultLocationId: matDefaultLocId || undefined,
+          defaultLocationName: targetLoc?.name || undefined,
+          variantAttributes: matVariantAttrs.trim() || undefined,
+          variantValue: matVariantVal.trim() || undefined,
+          unitCost: Number(matUnitCost),
+          description: matDescription.trim(),
+        });
+        if (result.success) {
+          setMaterialModalOpen(false);
+        } else {
+          setCodeDuplicateError(result.message || 'Gagal menyimpan.');
+        }
       } else {
-        setCodeDuplicateError(result.message || 'Gagal menyimpan.');
-      }
-    } else {
-      const result = addMaterial({
-        materialCode: matCode.trim().toUpperCase(),
-        materialName: matName.trim(),
-        categoryId: matCategoryId,
-        categoryName: targetCat?.name || 'General',
-        subcategoryId: matSubcategoryId.trim() || undefined,
-        unitId: matUnitId,
-        unit: targetUnit?.symbol || 'Pcs',
-        minimumStock: Number(matMinStock),
-        reorderPoint: Number(matRop),
-        defaultLocationId: matDefaultLocId || undefined,
-        defaultLocationName: targetLoc?.name || undefined,
-        variantAttributes: matVariantAttrs.trim() || undefined,
-        variantValue: matVariantVal.trim() || undefined,
-        unitCost: Number(matUnitCost),
-        description: matDescription.trim(),
-        isActive: true,
-      });
+        const result = await addMaterial({
+          materialCode: matCode.trim().toUpperCase(),
+          materialName: matName.trim(),
+          categoryId: matCategoryId,
+          categoryName: targetCat?.name || 'General',
+          subcategoryId: matSubcategoryId.trim() || undefined,
+          unitId: matUnitId,
+          unit: targetUnit?.symbol || 'Pcs',
+          minimumStock: Number(matMinStock),
+          reorderPoint: Number(matRop),
+          defaultLocationId: matDefaultLocId || undefined,
+          defaultLocationName: targetLoc?.name || undefined,
+          variantAttributes: matVariantAttrs.trim() || undefined,
+          variantValue: matVariantVal.trim() || undefined,
+          unitCost: Number(matUnitCost),
+          description: matDescription.trim(),
+          isActive: true,
+        });
 
-      if (result.success) {
-        setMaterialModalOpen(false);
-      } else {
-        setCodeDuplicateError(result.message || 'Gagal menambahkan material.');
+        if (result.success) {
+          setMaterialModalOpen(false);
+        } else {
+          setCodeDuplicateError(result.message || 'Gagal menambahkan material.');
+        }
       }
+    } finally {
+      setIsSubmittingMat(false);
     }
   };
 
@@ -281,36 +302,76 @@ export const MasterData: React.FC = () => {
     setLocationModalOpen(true);
   };
 
-  const handleSubmitLocation = (e: React.FormEvent) => {
+  const handleSubmitLocation = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSubmittingLoc(true);
 
-    if (editingLocationId) {
-      const res = updateLocation(editingLocationId, {
-        code: locCode.trim().toUpperCase(),
-        name: locName.trim(),
-        type: locType,
-        parentLocationId: locParentId || null,
-        picName: locPic.trim(),
-        personInCharge: locPic.trim(),
-        capacityM2: Number(locCapacity),
-        address: locAddress.trim(),
-        description: locDesc.trim(),
-      });
-      if (res.success) setLocationModalOpen(false);
-    } else {
-      const res = addLocation({
-        code: locCode.trim().toUpperCase(),
-        name: locName.trim(),
-        type: locType,
-        parentLocationId: locParentId || null,
-        picName: locPic.trim(),
-        personInCharge: locPic.trim(),
-        capacityM2: Number(locCapacity),
-        address: locAddress.trim(),
-        description: locDesc.trim(),
-        isActive: true,
-      });
-      if (res.success) setLocationModalOpen(false);
+    try {
+      if (editingLocationId) {
+        const res = await updateLocation(editingLocationId, {
+          code: locCode.trim().toUpperCase(),
+          name: locName.trim(),
+          type: locType,
+          parentLocationId: locParentId || null,
+          picName: locPic.trim(),
+          personInCharge: locPic.trim(),
+          capacityM2: Number(locCapacity),
+          address: locAddress.trim(),
+          description: locDesc.trim(),
+        });
+        if (res.success) setLocationModalOpen(false);
+      } else {
+        const res = await addLocation({
+          code: locCode.trim().toUpperCase(),
+          name: locName.trim(),
+          type: locType,
+          parentLocationId: locParentId || null,
+          picName: locPic.trim(),
+          personInCharge: locPic.trim(),
+          capacityM2: Number(locCapacity),
+          address: locAddress.trim(),
+          description: locDesc.trim(),
+          isActive: true,
+        });
+        if (res.success) setLocationModalOpen(false);
+      }
+    } finally {
+      setIsSubmittingLoc(false);
+    }
+  };
+
+  const handleDeleteMaterialConfirm = async () => {
+    if (!materialToDelete) return;
+    setIsDeleting(true);
+    try {
+      const res = await deleteMaterial(materialToDelete.id);
+      if (res.success) {
+        setMaterialToDelete(null);
+      }
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleDeleteLocationConfirm = async () => {
+    if (!locationToDelete) return;
+    setIsDeleting(true);
+    try {
+      const res = await deleteLocation(locationToDelete.id);
+      if (res.success) {
+        setLocationToDelete(null);
+      }
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleSeedDemoData = async () => {
+    setIsSeeding(true);
+    try {
+      await seedDemoData();
+    } finally {
+      setIsSeeding(false);
     }
   };
 
@@ -390,6 +451,28 @@ export const MasterData: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Synchronization Status Notification */}
+      {syncLoading && (
+        <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-2.5 text-xs text-blue-800 animate-pulse">
+          <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+          <span>Menyinkronkan data dengan Cloud Firestore...</span>
+        </div>
+      )}
+
+      {syncErrors['materials'] && (
+        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2.5 text-xs text-rose-800">
+          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+          <span>Gagal menyinkronkan data material dari Firestore: {syncErrors['materials']}</span>
+        </div>
+      )}
+
+      {syncErrors['locations'] && (
+        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2.5 text-xs text-rose-800">
+          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+          <span>Gagal menyinkronkan data lokasi dari Firestore: {syncErrors['locations']}</span>
+        </div>
+      )}
 
       {/* Navigation Tabs */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 border-b border-slate-200 text-xs">
@@ -546,7 +629,46 @@ export const MasterData: React.FC = () => {
                   {filteredMaterials.length === 0 ? (
                     <tr>
                       <td colSpan={9} className="py-12 text-center text-slate-400">
-                        Tidak ada material yang sesuai kriteria pencarian.
+                        {materials.length === 0 ? (
+                          <div className="max-w-md mx-auto space-y-3">
+                            <Package className="w-10 h-10 text-slate-300 mx-auto" />
+                            <div>
+                              <p className="font-bold text-slate-700 text-sm">Belum Ada Master Material di Cloud Firestore</p>
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                Daftarkan material baru atau inisialisasi data standar PT IAS untuk memulai operasional logistik.
+                              </p>
+                            </div>
+                            <div className="flex items-center justify-center gap-2 pt-1">
+                              {canManage && (
+                                <button
+                                  type="button"
+                                  onClick={handleOpenAddMaterial}
+                                  className="px-3.5 py-2 rounded-xl bg-[#064e3b] text-white font-bold text-xs hover:bg-[#065f46] transition flex items-center gap-1.5"
+                                >
+                                  <Plus className="w-4 h-4" />
+                                  <span>Tambah Material Baru</span>
+                                </button>
+                              )}
+                              {currentUser?.role === 'ADMIN' && (
+                                <button
+                                  type="button"
+                                  disabled={isSeeding}
+                                  onClick={handleSeedDemoData}
+                                  className="px-3.5 py-2 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-300 font-bold text-xs hover:bg-emerald-100 transition flex items-center gap-1.5 disabled:opacity-50"
+                                >
+                                  {isSeeding ? (
+                                    <Loader2 className="w-4 h-4 animate-spin text-emerald-700" />
+                                  ) : (
+                                    <Sparkles className="w-4 h-4 text-emerald-700" />
+                                  )}
+                                  <span>Inisialisasi Data Demo PT IAS</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <span>Tidak ada material yang sesuai kriteria pencarian.</span>
+                        )}
                       </td>
                     </tr>
                   ) : (
@@ -629,6 +751,13 @@ export const MasterData: React.FC = () => {
                                   title={m.isActive ? 'Non-aktifkan Material (Cegah transaksi baru)' : 'Aktifkan Material'}
                                 >
                                   <Power className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setMaterialToDelete(m)}
+                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                                  title="Hapus Material dari Master Data"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </>
                             )}
@@ -775,6 +904,13 @@ export const MasterData: React.FC = () => {
                         title={loc.isActive ? 'Non-aktifkan Lokasi' : 'Aktifkan Lokasi'}
                       >
                         <Power className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setLocationToDelete(loc)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
+                        title="Hapus Lokasi dari Master Data"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </>
                   )}
@@ -1164,16 +1300,25 @@ export const MasterData: React.FC = () => {
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 shrink-0 text-xs">
               <button
                 type="button"
+                disabled={isSubmittingMat}
                 onClick={() => setMaterialModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold shadow-2xs"
+                disabled={isSubmittingMat}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
               >
-                {editingMaterialId ? 'Simpan Perubahan' : 'Daftarkan Material'}
+                {isSubmittingMat ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan ke Firestore...</span>
+                  </>
+                ) : (
+                  <span>{editingMaterialId ? 'Simpan Perubahan' : 'Daftarkan Material'}</span>
+                )}
               </button>
             </div>
           </form>
@@ -1303,16 +1448,25 @@ export const MasterData: React.FC = () => {
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 shrink-0 text-xs">
               <button
                 type="button"
+                disabled={isSubmittingLoc}
                 onClick={() => setLocationModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold shadow-2xs"
+                disabled={isSubmittingLoc}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
               >
-                {editingLocationId ? 'Simpan Perubahan' : 'Daftarkan Lokasi'}
+                {isSubmittingLoc ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan ke Firestore...</span>
+                  </>
+                ) : (
+                  <span>{editingLocationId ? 'Simpan Perubahan' : 'Daftarkan Lokasi'}</span>
+                )}
               </button>
             </div>
           </form>
@@ -1472,6 +1626,124 @@ export const MasterData: React.FC = () => {
                 className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold text-xs"
               >
                 Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DELETE MATERIAL CONFIRMATION */}
+      {materialToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-100 text-rose-700">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Hapus Material</h3>
+                <p className="text-xs text-slate-500">Tindakan ini akan menghapus data dari Cloud Firestore</p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700 space-y-1">
+              <div>
+                Kode Material: <span className="font-mono font-bold text-slate-900">{materialToDelete.materialCode}</span>
+              </div>
+              <div>
+                Nama Material: <span className="font-bold text-slate-900">{materialToDelete.materialName}</span>
+              </div>
+              <div>
+                Kategori: <span className="font-medium text-slate-800">{materialToDelete.categoryName}</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Apakah Anda yakin ingin menghapus material ini? Material hanya dapat dihapus jika tidak memiliki riwayat transaksi atau sisa stok aktif.
+            </p>
+
+            <div className="pt-2 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setMaterialToDelete(null)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleDeleteMaterialConfirm}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition flex items-center gap-1.5 disabled:opacity-50 shadow-xs"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <span>Konfirmasi Hapus</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DELETE LOCATION CONFIRMATION */}
+      {locationToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-100 text-rose-700">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Hapus Lokasi Master</h3>
+                <p className="text-xs text-slate-500">Tindakan ini akan menghapus data dari Cloud Firestore</p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700 space-y-1">
+              <div>
+                Kode Lokasi: <span className="font-mono font-bold text-slate-900">{locationToDelete.code}</span>
+              </div>
+              <div>
+                Nama Lokasi: <span className="font-bold text-slate-900">{locationToDelete.name}</span>
+              </div>
+              <div>
+                Tipe: <span className="font-medium text-slate-800">{locationToDelete.type}</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Apakah Anda yakin ingin menghapus lokasi ini? Lokasi hanya dapat dihapus jika tidak memiliki sisa saldo stok di dalamnya.
+            </p>
+
+            <div className="pt-2 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setLocationToDelete(null)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleDeleteLocationConfirm}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition flex items-center gap-1.5 disabled:opacity-50 shadow-xs"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <span>Konfirmasi Hapus</span>
+                )}
               </button>
             </div>
           </div>

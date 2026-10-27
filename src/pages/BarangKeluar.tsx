@@ -62,6 +62,11 @@ export const BarangKeluar: React.FC = () => {
       showToast('error', 'Akses Ditolak', perm.reason || 'Peran Site Head hanya dapat melihat dokumen pengeluaran.');
       return;
     }
+    setFormData((prev) => ({
+      ...prev,
+      itemId: prev.itemId || items[0]?.id || '',
+      requestingUnit: prev.requestingUnit || requestingUnits[0]?.name || '',
+    }));
     setModalOpen(true);
   };
 
@@ -346,19 +351,36 @@ export const BarangKeluar: React.FC = () => {
                 </div>
               </div>
 
+              {items.length === 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-amber-800">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold">Stok Inventaris Belum Tersedia</div>
+                    <div className="text-[11px] text-amber-700 mt-0.5">
+                      Belum ada stok barang yang terdaftar di gudang. Catat penerimaan barang masuk terlebih dahulu.
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="text-slate-600 block mb-1 font-semibold">Item Barang</label>
                 <select
                   required
+                  disabled={items.length === 0}
                   value={formData.itemId}
                   onChange={(e) => setFormData({ ...formData, itemId: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white disabled:bg-slate-100 disabled:text-slate-400"
                 >
-                  {items.map((it) => (
-                    <option key={it.id} value={it.id}>
-                      {it.itemCode} - {it.itemName} (Tersedia: {it.availableStock} {it.unit} di {it.locationName})
-                    </option>
-                  ))}
+                  {items.length === 0 ? (
+                    <option value="">-- Tidak ada stok tersedia di gudang --</option>
+                  ) : (
+                    items.map((it) => (
+                      <option key={it.id} value={it.id}>
+                        {it.itemCode} - {it.itemName} (Tersedia: {it.availableStock} {it.unit} di {it.locationName})
+                      </option>
+                    ))
+                  )}
                 </select>
               </div>
 
@@ -423,7 +445,7 @@ export const BarangKeluar: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={selectedItemData && formData.requestedQuantity > selectedItemData.availableStock}
+                disabled={items.length === 0 || !selectedItemData || formData.requestedQuantity > selectedItemData.availableStock}
                 className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Kirim Permohonan Keluar

@@ -76,22 +76,26 @@ service cloud.firestore {
     // Master Data: Materials, Locations, Categories, Units
     match /materials/{id} {
       allow read: if isActiveStaff();
-      allow write: if isAdmin();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
     }
 
     match /locations/{id} {
       allow read: if isActiveStaff();
-      allow write: if isAdmin();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
     }
 
     match /categories/{id} {
       allow read: if isActiveStaff();
-      allow write: if isAdmin();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
     }
 
     match /units/{id} {
       allow read: if isActiveStaff();
-      allow write: if isAdmin();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
     }
 
     // Inventory Ledger & Physical Balances

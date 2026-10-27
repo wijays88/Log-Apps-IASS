@@ -134,21 +134,28 @@ interface AppContextType {
   removeToast: (id: string) => void;
   can: (action: PermissionAction) => { allowed: boolean; reason?: string };
 
+  syncLoading: boolean;
+  syncErrors: Record<string, string>;
+  seedDemoData: () => Promise<{ success: boolean; message?: string }>;
+  clearLocalCache: () => void;
+
   // Dynamic Material Master Actions
-  addMaterial: (material: Omit<MaterialMaster, 'id' | 'materialId' | 'createdAt' | 'createdBy' | 'updatedAt' | 'updatedBy'>) => { success: boolean; message?: string; material?: MaterialMaster };
-  updateMaterial: (id: string, updates: Partial<MaterialMaster>) => { success: boolean; message?: string };
-  toggleMaterialStatus: (id: string) => boolean;
+  addMaterial: (material: Omit<MaterialMaster, 'id' | 'materialId' | 'createdAt' | 'createdBy' | 'updatedAt' | 'updatedBy'>) => Promise<{ success: boolean; message?: string; material?: MaterialMaster }>;
+  updateMaterial: (id: string, updates: Partial<MaterialMaster>) => Promise<{ success: boolean; message?: string }>;
+  toggleMaterialStatus: (id: string) => Promise<boolean>;
+  deleteMaterial: (id: string) => Promise<{ success: boolean; message?: string }>;
 
   // Dynamic Location Master Actions
-  addLocation: (location: Omit<MasterLocation, 'id' | 'createdAt' | 'createdBy'>) => { success: boolean; message?: string; location?: MasterLocation };
-  updateLocation: (id: string, updates: Partial<MasterLocation>) => { success: boolean; message?: string };
-  toggleLocationStatus: (id: string) => boolean;
+  addLocation: (location: Omit<MasterLocation, 'id' | 'createdAt' | 'createdBy'>) => Promise<{ success: boolean; message?: string; location?: MasterLocation }>;
+  updateLocation: (id: string, updates: Partial<MasterLocation>) => Promise<{ success: boolean; message?: string }>;
+  toggleLocationStatus: (id: string) => Promise<boolean>;
+  deleteLocation: (id: string) => Promise<{ success: boolean; message?: string }>;
 
   // Categories & Units
-  saveCategory: (cat: Partial<MasterCategory>) => boolean;
-  toggleCategoryStatus: (id: string) => boolean;
-  saveUnit: (unit: Partial<MasterUnit>) => boolean;
-  toggleUnitStatus: (id: string) => boolean;
+  saveCategory: (cat: Partial<MasterCategory>) => Promise<boolean>;
+  toggleCategoryStatus: (id: string) => Promise<boolean>;
+  saveUnit: (unit: Partial<MasterUnit>) => Promise<boolean>;
+  toggleUnitStatus: (id: string) => Promise<boolean>;
 
   // Operational Inventory Actions
   addGoodsReceipt: (receipt: {
@@ -164,7 +171,7 @@ interface AppContextType {
     destinationLocationId: string;
     destinationLocationName?: string;
     notes?: string;
-  }) => boolean;
+  }) => Promise<boolean>;
 
   createGoodsIssue: (issue: {
     requestingUnit: string;
@@ -305,6 +312,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [syncLoading, setSyncLoading] = useState<boolean>(true);
+  const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
+  const [isSeedingDemo, setIsSeedingDemo] = useState<boolean>(false);
 
   const [activeNav, setActiveNav] = useState<string>('Dashboard');
   const [toasts, setToasts] = useState<NotificationToast[]>([]);
@@ -347,7 +357,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             await setDoc(userDocRef, newProfile);
             setCurrentUser(newProfile);
           }
-        } catch (err) {
+        } catch (err: any) {
           console.error('Error fetching user profile from Firestore:', err);
           const isOwnerAdmin =
             fbUser.email === 'wijaya.ihsan@gmail.com' ||
@@ -374,14 +384,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => unsubscribe();
   }, []);
 
-  // Synchronize Firestore collections in real-time when authenticated
+  // Synchronize Firestore collections in real-time as authoritative source when authenticated
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser) {
+      setSyncLoading(false);
+      return;
+    }
 
-    const bindSync = <T,>(
+    setSyncLoading(true);
+
+    const bindSync = <T extends { id?: string }>(
       colName: string,
       setter: React.Dispatch<React.SetStateAction<T[]>>,
-      defaultSeed?: T[]
+      onLoaded?: () => void
     ) => {
       const q = collection(db, colName);
       return onSnapshot(
@@ -390,35 +405,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!snap.empty) {
             const items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as T));
             setter(items);
-          } else if (defaultSeed && defaultSeed.length > 0) {
-            defaultSeed.forEach((item: any) => {
-              if (item.id) {
-                setDoc(doc(db, colName, item.id), item).catch(() => {});
-              }
-            });
+            try {
+              localStorage.setItem(STORAGE_KEY_PREFIX + colName, JSON.stringify(items));
+            } catch {}
+          } else {
+            // Firestore collection is empty: authoritative state is empty array
+            setter([]);
+            try {
+              localStorage.setItem(STORAGE_KEY_PREFIX + colName, JSON.stringify([]));
+            } catch {}
           }
+          setSyncErrors((prev) => {
+            if (!prev[colName]) return prev;
+            const copy = { ...prev };
+            delete copy[colName];
+            return copy;
+          });
+          onLoaded?.();
         },
         (error) => {
-          console.warn(`Firestore sync [${colName}] warning:`, error.message);
+          console.error(`[Firestore Sync: ${colName}]`, error.message);
+          setSyncErrors((prev) => ({ ...prev, [colName]: error.message }));
+          onLoaded?.();
         }
       );
     };
 
-    const unsubMaterials = bindSync('materials', setMaterials);
-    const unsubLocations = bindSync('locations', setLocations);
-    const unsubCategories = bindSync('categories', setCategories, INITIAL_CATEGORIES);
-    const unsubUnits = bindSync('units', setUnits, INITIAL_UNITS);
-    const unsubInventory = bindSync('inventory', setInventory);
-    const unsubReceipts = bindSync('goodsReceipts', setGoodsReceipts);
-    const unsubIssues = bindSync('goodsIssues', setGoodsIssues);
-    const unsubTransfers = bindSync('stockTransfers', setStockTransfers);
-    const unsubOpnames = bindSync('stockOpnames', setStockOpnames);
-    const unsubConsumptions = bindSync('consumptions', setConsumptions);
-    const unsubTrolleys = bindSync('morganTrolleys', setMorganTrolleys);
-    const unsubRequests = bindSync('supplyRequests', setSupplyRequests);
-    const unsubApprovals = bindSync('approvals', setApprovals);
-    const unsubAudit = bindSync('auditLogs', setAuditLogs);
-    const unsubUsers = bindSync('users', setUsers);
+    let pendingLoads = 15;
+    const markLoaded = () => {
+      pendingLoads--;
+      if (pendingLoads <= 0) {
+        setSyncLoading(false);
+      }
+    };
+
+    const unsubMaterials = bindSync('materials', setMaterials, markLoaded);
+    const unsubLocations = bindSync('locations', setLocations, markLoaded);
+    const unsubCategories = bindSync('categories', setCategories, markLoaded);
+    const unsubUnits = bindSync('units', setUnits, markLoaded);
+    const unsubInventory = bindSync('inventory', setInventory, markLoaded);
+    const unsubReceipts = bindSync('goodsReceipts', setGoodsReceipts, markLoaded);
+    const unsubIssues = bindSync('goodsIssues', setGoodsIssues, markLoaded);
+    const unsubTransfers = bindSync('stockTransfers', setStockTransfers, markLoaded);
+    const unsubOpnames = bindSync('stockOpnames', setStockOpnames, markLoaded);
+    const unsubConsumptions = bindSync('consumptions', setConsumptions, markLoaded);
+    const unsubTrolleys = bindSync('morganTrolleys', setMorganTrolleys, markLoaded);
+    const unsubRequests = bindSync('supplyRequests', setSupplyRequests, markLoaded);
+    const unsubApprovals = bindSync('approvals', setApprovals, markLoaded);
+    const unsubAudit = bindSync('auditLogs', setAuditLogs, markLoaded);
+    const unsubUsers = bindSync('users', setUsers, markLoaded);
+
+    // Sync global system settings
+    const unsubSettings = onSnapshot(
+      doc(db, 'settings', 'global'),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setSettings(docSnap.data() as SystemSettings);
+        }
+      },
+      (err) => console.warn('Settings sync warning:', err.message)
+    );
 
     return () => {
       unsubMaterials();
@@ -436,6 +482,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubApprovals();
       unsubAudit();
       unsubUsers();
+      unsubSettings();
     };
   }, [currentUser?.id]);
 
@@ -482,7 +529,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  const logAudit = (action: string, module: string, details: string) => {
+  const logAudit = async (action: string, module: string, details: string) => {
     if (!currentUser) return;
     const newLog: AuditLog = {
       id: 'audit-' + Date.now(),
@@ -495,8 +542,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       details,
       ipAddress: '192.168.10.' + (Math.floor(Math.random() * 50) + 10),
     };
-    setAuditLogs((prev) => [newLog, ...prev]);
-    setDoc(doc(db, 'auditLogs', newLog.id), newLog).catch(() => {});
+    try {
+      await setDoc(doc(db, 'auditLogs', newLog.id), newLog);
+    } catch (err: any) {
+      console.warn('[Firestore LogAudit Warning]:', err.message);
+    }
   };
 
   // Firebase Authentication Methods
@@ -671,11 +721,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // ----------------------------------------------------
-  // DYNAMIC MATERIAL MASTER
+  // DYNAMIC MATERIAL MASTER (Cloud Firestore Authoritative)
   // ----------------------------------------------------
-  const addMaterial = (
+  const addMaterial = async (
     data: Omit<MaterialMaster, 'id' | 'materialId' | 'createdAt' | 'createdBy' | 'updatedAt' | 'updatedBy'>
-  ) => {
+  ): Promise<{ success: boolean; message?: string; material?: MaterialMaster }> => {
     const perm = can('MANAGE_MASTER_DATA');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -705,7 +755,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const location = locations.find((l) => l.id === data.defaultLocationId);
 
     const now = getJakartaTimestamp();
-    const id = 'mat-' + Date.now();
+    const id = 'mat-' + finalCode.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
 
     const newMaterial: MaterialMaster = {
       ...data,
@@ -722,54 +772,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedBy: currentUser ? currentUser.employeeId : 'SYSTEM',
     };
 
-    setMaterials((prev) => [newMaterial, ...prev]);
+    try {
+      // 1. Authoritative write to Firestore
+      await setDoc(doc(db, 'materials', id), newMaterial);
 
-    // If default location is set, register zero or initial inventory balance if not present
-    if (newMaterial.defaultLocationId) {
-      setInventory((prev) => {
-        const exists = prev.find(
-          (inv) => inv.materialId === newMaterial.id && inv.locationId === newMaterial.defaultLocationId
-        );
-        if (!exists) {
-          const newBal: InventoryBalance = {
-            id: 'bal-' + Date.now(),
-            materialId: newMaterial.id,
-            materialCode: newMaterial.materialCode,
-            materialName: newMaterial.materialName,
-            categoryId: newMaterial.categoryId,
-            categoryName: newMaterial.categoryName,
-            unit: newMaterial.unit,
-            locationId: newMaterial.defaultLocationId!,
-            locationName: newMaterial.defaultLocationName || 'Gudang Default',
-            variantValue: newMaterial.variantValue,
-            openingStock: 0,
-            qtyIn: 0,
-            qtyOut: 0,
-            availableStock: 0,
-            minimumStock: newMaterial.minimumStock,
-            reorderPoint: newMaterial.reorderPoint,
-            lastTransactionDate: now.split(' ')[0],
-            unitCost: newMaterial.unitCost,
-          };
-          return [newBal, ...prev];
-        }
-        return prev;
-      });
+      // 2. If default location is set, register zero balance in Firestore
+      if (newMaterial.defaultLocationId) {
+        const balId = `bal-${id}-${newMaterial.defaultLocationId}`;
+        const newBal: InventoryBalance = {
+          id: balId,
+          materialId: newMaterial.id,
+          materialCode: newMaterial.materialCode,
+          materialName: newMaterial.materialName,
+          categoryId: newMaterial.categoryId,
+          categoryName: newMaterial.categoryName,
+          unit: newMaterial.unit,
+          locationId: newMaterial.defaultLocationId,
+          locationName: newMaterial.defaultLocationName || 'Gudang Default',
+          variantValue: newMaterial.variantValue,
+          openingStock: 0,
+          qtyIn: 0,
+          qtyOut: 0,
+          availableStock: 0,
+          minimumStock: newMaterial.minimumStock,
+          reorderPoint: newMaterial.reorderPoint,
+          lastTransactionDate: now.split(' ')[0],
+          unitCost: newMaterial.unitCost,
+        };
+        await setDoc(doc(db, 'inventory', balId), newBal, { merge: true });
+      }
+
+      await logAudit(
+        'MATERIAL_CREATED',
+        'Master Data',
+        `Menambah material baru di Firestore: ${newMaterial.materialName} (${newMaterial.materialCode})`
+      );
+
+      showToast(
+        'success',
+        'Material Tersimpan di Cloud Firestore',
+        `Material ${newMaterial.materialName} (${newMaterial.materialCode}) telah aktif di sistem.`
+      );
+      return { success: true, material: newMaterial };
+    } catch (err: any) {
+      console.error('[Firestore Error: addMaterial]', err);
+      const errMsg = err.message || 'Gagal menyimpan material ke Cloud Firestore.';
+      showToast('error', 'Gagal Menyimpan ke Cloud Firestore', errMsg);
+      return { success: false, message: errMsg };
     }
-
-    logAudit('MATERIAL_CREATED', 'Master Data', `Menambah material baru: ${newMaterial.materialName} (${newMaterial.materialCode})`);
-    showToast('success', 'Material Berhasil Ditambahkan', `Material ${newMaterial.materialName} (${newMaterial.materialCode}) telah aktif di sistem.`);
-    return { success: true, material: newMaterial };
   };
 
-  const updateMaterial = (id: string, updates: Partial<MaterialMaster>) => {
+  const updateMaterial = async (
+    id: string,
+    updates: Partial<MaterialMaster>
+  ): Promise<{ success: boolean; message?: string }> => {
     const perm = can('MANAGE_MASTER_DATA');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
       return { success: false, message: perm.reason };
     }
 
-    // If materialCode is being updated, check uniqueness
     if (updates.materialCode) {
       const codeUpper = updates.materialCode.trim().toUpperCase();
       const duplicate = materials.find((m) => m.id !== id && m.materialCode.toUpperCase() === codeUpper);
@@ -780,46 +842,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updates.materialCode = codeUpper;
     }
 
+    const currentMat = materials.find((m) => m.id === id);
+    if (!currentMat) {
+      showToast('error', 'Material Tidak Ditemukan', `Material ID ${id} tidak ada.`);
+      return { success: false, message: 'Material tidak ditemukan.' };
+    }
+
     const now = getJakartaTimestamp();
-    setMaterials((prev) =>
-      prev.map((m) => {
-        if (m.id === id) {
-          return {
-            ...m,
-            ...updates,
-            updatedAt: now,
-            updatedBy: currentUser?.employeeId || 'SYSTEM',
-          };
-        }
-        return m;
-      })
-    );
+    const updatedMaterial: MaterialMaster = {
+      ...currentMat,
+      ...updates,
+      updatedAt: now,
+      updatedBy: currentUser?.employeeId || 'SYSTEM',
+    };
 
-    // Sync display info into inventory balances
-    setInventory((prev) =>
-      prev.map((inv) => {
-        if (inv.materialId === id) {
-          return {
-            ...inv,
-            materialCode: updates.materialCode || inv.materialCode,
-            materialName: updates.materialName || inv.materialName,
-            categoryName: updates.categoryName || inv.categoryName,
-            unit: updates.unit || inv.unit,
-            minimumStock: updates.minimumStock !== undefined ? updates.minimumStock : inv.minimumStock,
-            reorderPoint: updates.reorderPoint !== undefined ? updates.reorderPoint : inv.reorderPoint,
-            unitCost: updates.unitCost !== undefined ? updates.unitCost : inv.unitCost,
-          };
-        }
-        return inv;
-      })
-    );
+    try {
+      await setDoc(doc(db, 'materials', id), updatedMaterial, { merge: true });
 
-    logAudit('MATERIAL_UPDATED', 'Master Data', `Memperbarui material ID: ${id}`);
-    showToast('success', 'Material Diperbarui', 'Data material berhasil disimpan.');
-    return { success: true };
+      // Sync display info into related inventory balances in Firestore
+      const relatedBalances = inventory.filter((inv) => inv.materialId === id);
+      for (const bal of relatedBalances) {
+        await updateDoc(doc(db, 'inventory', bal.id), {
+          materialCode: updatedMaterial.materialCode,
+          materialName: updatedMaterial.materialName,
+          categoryName: updatedMaterial.categoryName,
+          unit: updatedMaterial.unit,
+          minimumStock: updatedMaterial.minimumStock,
+          reorderPoint: updatedMaterial.reorderPoint,
+          unitCost: updatedMaterial.unitCost,
+        }).catch(() => {});
+      }
+
+      await logAudit('MATERIAL_UPDATED', 'Master Data', `Memperbarui material di Firestore ID: ${id}`);
+      showToast('success', 'Material Diperbarui', 'Data material berhasil disimpan ke Cloud Firestore.');
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore Error: updateMaterial]', err);
+      const errMsg = err.message || 'Gagal memperbarui material di Cloud Firestore.';
+      showToast('error', 'Gagal Memperbarui di Cloud Firestore', errMsg);
+      return { success: false, message: errMsg };
+    }
   };
 
-  const toggleMaterialStatus = (id: string) => {
+  const toggleMaterialStatus = async (id: string): Promise<boolean> => {
     const perm = can('MANAGE_MASTER_DATA');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -832,21 +897,84 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nextStatus = !target.isActive;
     const now = getJakartaTimestamp();
 
-    setMaterials((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, isActive: nextStatus, updatedAt: now, updatedBy: currentUser?.employeeId || 'SYSTEM' } : m))
-    );
+    try {
+      await updateDoc(doc(db, 'materials', id), {
+        isActive: nextStatus,
+        updatedAt: now,
+        updatedBy: currentUser?.employeeId || 'SYSTEM',
+      });
+      await logAudit(
+        'MATERIAL_STATUS_TOGGLED',
+        'Master Data',
+        `Material ${target.materialCode} diubah status menjadi ${nextStatus ? 'Aktif' : 'Non-Aktif'}`
+      );
+      showToast(
+        'info',
+        'Status Material Diubah',
+        `${target.materialName} sekarang ${nextStatus ? 'Aktif (tersedia di transaksi)' : 'Non-Aktif (hanya arsip)'}.`
+      );
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: toggleMaterialStatus]', err);
+      showToast('error', 'Gagal Mengubah Status', err.message);
+      return false;
+    }
+  };
 
-    logAudit('MATERIAL_STATUS_TOGGLED', 'Master Data', `Material ${target.materialCode} diubah status menjadi ${nextStatus ? 'Aktif' : 'Non-Aktif'}`);
-    showToast('info', 'Status Material Diubah', `${target.materialName} sekarang ${nextStatus ? 'Aktif (tersedia di transaksi)' : 'Non-Aktif (hanya arsip)'}.`);
-    return true;
+  const deleteMaterial = async (id: string): Promise<{ success: boolean; message?: string }> => {
+    const perm = can('MANAGE_MASTER_DATA');
+    if (!perm.allowed) {
+      showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
+      return { success: false, message: perm.reason };
+    }
+
+    const target = materials.find((m) => m.id === id);
+    if (!target) {
+      return { success: false, message: 'Material tidak ditemukan.' };
+    }
+
+    // Check if material is used in transactions or has non-zero stock
+    const hasReceipts = goodsReceipts.some((r) => r.itemId === id || r.itemCode === target.materialCode);
+    const hasIssues = goodsIssues.some((i) => i.itemId === id || i.itemCode === target.materialCode);
+    const hasTransfers = stockTransfers.some((t) => t.itemId === id || t.itemCode === target.materialCode);
+    const hasActiveStock = inventory.some((b) => b.materialId === id && b.availableStock > 0);
+
+    if (hasReceipts || hasIssues || hasTransfers || hasActiveStock) {
+      const msg = `Material "${target.materialName}" tidak dapat dihapus karena sudah memiliki riwayat transaksi atau saldo stok aktif. Anda dapat menonaktifkan statusnya agar tidak muncul di transaksi baru.`;
+      showToast('warning', 'Hapus Ditolak', msg);
+      return { success: false, message: msg };
+    }
+
+    try {
+      await deleteDoc(doc(db, 'materials', id));
+
+      // Clean up any zero balances in inventory for this material
+      const zeroBalances = inventory.filter((b) => b.materialId === id);
+      for (const b of zeroBalances) {
+        await deleteDoc(doc(db, 'inventory', b.id)).catch(() => {});
+      }
+
+      await logAudit(
+        'MATERIAL_DELETED',
+        'Master Data',
+        `Menghapus material dari Firestore: ${target.materialName} (${target.materialCode})`
+      );
+      showToast('success', 'Material Dihapus', `Material ${target.materialName} telah dihapus dari Cloud Firestore.`);
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore Error: deleteMaterial]', err);
+      const errMsg = err.message || 'Gagal menghapus material dari Cloud Firestore.';
+      showToast('error', 'Gagal Menghapus Material', errMsg);
+      return { success: false, message: errMsg };
+    }
   };
 
   // ----------------------------------------------------
-  // DYNAMIC LOCATION MASTER
+  // DYNAMIC LOCATION MASTER (Cloud Firestore Authoritative)
   // ----------------------------------------------------
-  const addLocation = (
+  const addLocation = async (
     data: Omit<MasterLocation, 'id' | 'createdAt' | 'createdBy'>
-  ) => {
+  ): Promise<{ success: boolean; message?: string; location?: MasterLocation }> => {
     const perm = can('MANAGE_MASTER_DATA');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -866,7 +994,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const now = getJakartaTimestamp();
-    const id = 'loc-' + Date.now();
+    const id = 'loc-' + codeUpper.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
     const parentLoc = locations.find((l) => l.id === data.parentLocationId);
 
     const newLocation: MasterLocation = {
@@ -883,13 +1011,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: now,
     };
 
-    setLocations((prev) => [...prev, newLocation]);
-    logAudit('LOCATION_CREATED', 'Master Data', `Menambah lokasi/gudang baru: ${newLocation.name} (${newLocation.code})`);
-    showToast('success', 'Lokasi Berhasil Didaftarkan', `Gudang/Area ${newLocation.name} siap digunakan di seluruh transaksi.`);
-    return { success: true, location: newLocation };
+    try {
+      await setDoc(doc(db, 'locations', id), newLocation);
+      await logAudit(
+        'LOCATION_CREATED',
+        'Master Data',
+        `Menambah lokasi/gudang baru di Firestore: ${newLocation.name} (${newLocation.code})`
+      );
+      showToast('success', 'Lokasi Berhasil Didaftarkan', `Gudang/Area ${newLocation.name} siap digunakan di seluruh transaksi.`);
+      return { success: true, location: newLocation };
+    } catch (err: any) {
+      console.error('[Firestore Error: addLocation]', err);
+      const errMsg = err.message || 'Gagal menyimpan lokasi ke Cloud Firestore.';
+      showToast('error', 'Gagal Menyimpan Lokasi', errMsg);
+      return { success: false, message: errMsg };
+    }
   };
 
-  const updateLocation = (id: string, updates: Partial<MasterLocation>) => {
+  const updateLocation = async (
+    id: string,
+    updates: Partial<MasterLocation>
+  ): Promise<{ success: boolean; message?: string }> => {
     const perm = can('MANAGE_MASTER_DATA');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -907,35 +1049,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updates.locationCode = codeUpper;
     }
 
-    const now = getJakartaTimestamp();
-    setLocations((prev) =>
-      prev.map((loc) => {
-        if (loc.id === id) {
-          const parentLoc = updates.parentLocationId ? prev.find((l) => l.id === updates.parentLocationId) : undefined;
-          return {
-            ...loc,
-            ...updates,
-            parentLocationName: parentLoc ? parentLoc.name : loc.parentLocationName,
-            updatedAt: now,
-          };
-        }
-        return loc;
-      })
-    );
-
-    // Sync display locationName into inventory balances
-    if (updates.name) {
-      setInventory((prev) =>
-        prev.map((inv) => (inv.locationId === id ? { ...inv, locationName: updates.name! } : inv))
-      );
+    const currentLoc = locations.find((l) => l.id === id);
+    if (!currentLoc) {
+      showToast('error', 'Lokasi Tidak Ditemukan', `Lokasi ID ${id} tidak ada.`);
+      return { success: false, message: 'Lokasi tidak ditemukan.' };
     }
 
-    logAudit('LOCATION_UPDATED', 'Master Data', `Memperbarui lokasi ID: ${id}`);
-    showToast('success', 'Lokasi Diperbarui', 'Data lokasi berhasil disimpan.');
-    return { success: true };
+    const now = getJakartaTimestamp();
+    const parentLoc = updates.parentLocationId ? locations.find((l) => l.id === updates.parentLocationId) : undefined;
+    const updatedLocation: MasterLocation = {
+      ...currentLoc,
+      ...updates,
+      parentLocationName: parentLoc ? parentLoc.name : currentLoc.parentLocationName,
+      updatedAt: now,
+    };
+
+    try {
+      await setDoc(doc(db, 'locations', id), updatedLocation, { merge: true });
+
+      // Sync display locationName into inventory balances
+      if (updates.name) {
+        const relatedBalances = inventory.filter((inv) => inv.locationId === id);
+        for (const bal of relatedBalances) {
+          await updateDoc(doc(db, 'inventory', bal.id), { locationName: updates.name! }).catch(() => {});
+        }
+      }
+
+      await logAudit('LOCATION_UPDATED', 'Master Data', `Memperbarui lokasi di Firestore ID: ${id}`);
+      showToast('success', 'Lokasi Diperbarui', 'Data lokasi berhasil disimpan ke Cloud Firestore.');
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore Error: updateLocation]', err);
+      const errMsg = err.message || 'Gagal memperbarui lokasi di Cloud Firestore.';
+      showToast('error', 'Gagal Memperbarui Lokasi', errMsg);
+      return { success: false, message: errMsg };
+    }
   };
 
-  const toggleLocationStatus = (id: string) => {
+  const toggleLocationStatus = async (id: string): Promise<boolean> => {
     const perm = can('MANAGE_MASTER_DATA');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -948,81 +1099,156 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nextStatus = !target.isActive;
     const now = getJakartaTimestamp();
 
-    setLocations((prev) =>
-      prev.map((l) => (l.id === id ? { ...l, isActive: nextStatus, updatedAt: now } : l))
-    );
-
-    logAudit('LOCATION_STATUS_TOGGLED', 'Master Data', `Lokasi ${target.name} diubah status menjadi ${nextStatus ? 'Aktif' : 'Non-Aktif'}`);
-    showToast('info', 'Status Lokasi Diubah', `${target.name} sekarang ${nextStatus ? 'Aktif' : 'Non-Aktif'}.`);
-    return true;
+    try {
+      await updateDoc(doc(db, 'locations', id), {
+        isActive: nextStatus,
+        updatedAt: now,
+      });
+      await logAudit(
+        'LOCATION_STATUS_TOGGLED',
+        'Master Data',
+        `Lokasi ${target.name} diubah status menjadi ${nextStatus ? 'Aktif' : 'Non-Aktif'}`
+      );
+      showToast('info', 'Status Lokasi Diubah', `${target.name} sekarang ${nextStatus ? 'Aktif' : 'Non-Aktif'}.`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: toggleLocationStatus]', err);
+      showToast('error', 'Gagal Mengubah Status Lokasi', err.message);
+      return false;
+    }
   };
 
-  // Categories & Units
-  const saveCategory = (catData: Partial<MasterCategory>) => {
+  const deleteLocation = async (id: string): Promise<{ success: boolean; message?: string }> => {
+    const perm = can('MANAGE_MASTER_DATA');
+    if (!perm.allowed) {
+      showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
+      return { success: false, message: perm.reason };
+    }
+
+    const target = locations.find((l) => l.id === id);
+    if (!target) {
+      return { success: false, message: 'Lokasi tidak ditemukan.' };
+    }
+
+    const hasActiveStock = inventory.some((b) => b.locationId === id && b.availableStock > 0);
+    const hasReceipts = goodsReceipts.some((r) => r.destinationLocationId === id);
+    const hasIssues = goodsIssues.some((i) => i.locationId === id);
+
+    if (hasActiveStock || hasReceipts || hasIssues) {
+      const msg = `Lokasi "${target.name}" tidak dapat dihapus karena memiliki saldo stok aktif atau riwayat transaksi. Silakan gunakan fitur Non-aktifkan Status.`;
+      showToast('warning', 'Hapus Ditolak', msg);
+      return { success: false, message: msg };
+    }
+
+    try {
+      await deleteDoc(doc(db, 'locations', id));
+      await logAudit('LOCATION_DELETED', 'Master Data', `Menghapus lokasi dari Firestore: ${target.name} (${target.code})`);
+      showToast('success', 'Lokasi Dihapus', `Lokasi ${target.name} telah dihapus dari Cloud Firestore.`);
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore Error: deleteLocation]', err);
+      const errMsg = err.message || 'Gagal menghapus lokasi dari Cloud Firestore.';
+      showToast('error', 'Gagal Menghapus Lokasi', errMsg);
+      return { success: false, message: errMsg };
+    }
+  };
+
+  // Categories & Units (Cloud Firestore Authoritative)
+  const saveCategory = async (catData: Partial<MasterCategory>): Promise<boolean> => {
     const perm = can('MANAGE_MASTER_DATA');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
       return false;
     }
 
-    if (catData.id) {
-      setCategories((prev) => prev.map((c) => (c.id === catData.id ? ({ ...c, ...catData } as MasterCategory) : c)));
-      showToast('success', 'Kategori Disimpan', `Kategori ${catData.name} diperbarui.`);
-    } else {
-      const newCat: MasterCategory = {
-        id: 'cat-' + Date.now(),
-        code: catData.code?.toUpperCase() || 'CAT-' + (categories.length + 1),
-        name: catData.name || 'Kategori Baru',
-        description: catData.description || '',
-        isActive: true,
-      };
-      setCategories((prev) => [...prev, newCat]);
-      showToast('success', 'Kategori Ditambahkan', `Kategori ${newCat.name} berhasil dibuat.`);
+    try {
+      if (catData.id) {
+        await updateDoc(doc(db, 'categories', catData.id), catData);
+        showToast('success', 'Kategori Disimpan', `Kategori ${catData.name} diperbarui di Cloud Firestore.`);
+      } else {
+        const id = 'cat-' + (catData.code?.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || Date.now());
+        const newCat: MasterCategory = {
+          id,
+          code: catData.code?.toUpperCase() || 'CAT-' + (categories.length + 1),
+          name: catData.name || 'Kategori Baru',
+          description: catData.description || '',
+          isActive: true,
+        };
+        await setDoc(doc(db, 'categories', id), newCat);
+        showToast('success', 'Kategori Ditambahkan', `Kategori ${newCat.name} berhasil dibuat di Cloud Firestore.`);
+      }
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: saveCategory]', err);
+      showToast('error', 'Gagal Menyimpan Kategori', err.message);
+      return false;
     }
-    return true;
   };
 
-  const toggleCategoryStatus = (id: string) => {
-    setCategories((prev) => prev.map((c) => (c.id === id ? { ...c, isActive: !c.isActive } : c)));
-    showToast('info', 'Status Kategori Diubah', 'Status kategori berhasil diperbarui.');
-    return true;
+  const toggleCategoryStatus = async (id: string): Promise<boolean> => {
+    const target = categories.find((c) => c.id === id);
+    if (!target) return false;
+    try {
+      await updateDoc(doc(db, 'categories', id), { isActive: !target.isActive });
+      showToast('info', 'Status Kategori Diubah', 'Status kategori berhasil diperbarui.');
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: toggleCategoryStatus]', err);
+      showToast('error', 'Gagal Mengubah Status Kategori', err.message);
+      return false;
+    }
   };
 
-  const saveUnit = (unitData: Partial<MasterUnit>) => {
+  const saveUnit = async (unitData: Partial<MasterUnit>): Promise<boolean> => {
     const perm = can('MANAGE_MASTER_DATA');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
       return false;
     }
 
-    if (unitData.id) {
-      setUnits((prev) => prev.map((u) => (u.id === unitData.id ? ({ ...u, ...unitData } as MasterUnit) : u)));
-      showToast('success', 'Satuan Disimpan', `Satuan ${unitData.name} diperbarui.`);
-    } else {
-      const newU: MasterUnit = {
-        id: 'unit-' + Date.now(),
-        code: unitData.code?.toUpperCase() || unitData.symbol?.toUpperCase() || 'U',
-        name: unitData.name || 'Satuan Baru',
-        symbol: unitData.symbol || 'U',
-        description: unitData.description || '',
-        isActive: true,
-      };
-      setUnits((prev) => [...prev, newU]);
-      showToast('success', 'Satuan Ditambahkan', `Satuan ${newU.name} (${newU.symbol}) berhasil dibuat.`);
+    try {
+      if (unitData.id) {
+        await updateDoc(doc(db, 'units', unitData.id), unitData);
+        showToast('success', 'Satuan Disimpan', `Satuan ${unitData.name} diperbarui di Cloud Firestore.`);
+      } else {
+        const id = 'unit-' + (unitData.code?.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || Date.now());
+        const newU: MasterUnit = {
+          id,
+          code: unitData.code?.toUpperCase() || unitData.symbol?.toUpperCase() || 'U',
+          name: unitData.name || 'Satuan Baru',
+          symbol: unitData.symbol || 'U',
+          description: unitData.description || '',
+          isActive: true,
+        };
+        await setDoc(doc(db, 'units', id), newU);
+        showToast('success', 'Satuan Ditambahkan', `Satuan ${newU.name} (${newU.symbol}) berhasil dibuat di Cloud Firestore.`);
+      }
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: saveUnit]', err);
+      showToast('error', 'Gagal Menyimpan Satuan', err.message);
+      return false;
     }
-    return true;
   };
 
-  const toggleUnitStatus = (id: string) => {
-    setUnits((prev) => prev.map((u) => (u.id === id ? { ...u, isActive: !u.isActive } : u)));
-    showToast('info', 'Status Satuan Diubah', 'Status satuan berhasil diperbarui.');
-    return true;
+  const toggleUnitStatus = async (id: string): Promise<boolean> => {
+    const target = units.find((u) => u.id === id);
+    if (!target) return false;
+    try {
+      await updateDoc(doc(db, 'units', id), { isActive: !target.isActive });
+      showToast('info', 'Status Satuan Diubah', 'Status satuan berhasil diperbarui.');
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: toggleUnitStatus]', err);
+      showToast('error', 'Gagal Mengubah Status Satuan', err.message);
+      return false;
+    }
   };
 
   // ----------------------------------------------------
-  // GOODS RECEIPT (IN)
+  // GOODS RECEIPT (IN) (Cloud Firestore Authoritative)
   // ----------------------------------------------------
-  const addGoodsReceipt = (data: {
+  const addGoodsReceipt = async (data: {
     receiptDate: string;
     sourceSupplier: string;
     referenceDocument: string;
@@ -1035,7 +1261,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     destinationLocationId: string;
     destinationLocationName?: string;
     notes?: string;
-  }): boolean => {
+  }): Promise<boolean> => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -1050,7 +1276,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const targetMatId = data.materialId || data.itemId;
     const material = materials.find((m) => m.id === targetMatId || (data.itemCode && m.materialCode === data.itemCode));
     if (!material) {
-      showToast('error', 'Validasi Gagal', 'Material tidak ditemukan.');
+      showToast('error', 'Validasi Gagal', 'Material tidak ditemukan dalam Master Data.');
       return false;
     }
 
@@ -1067,9 +1293,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const nextNumber = 'GR-2026-' + (1000 + goodsReceipts.length + 1);
     const now = getJakartaTimestamp();
+    const id = 'gr-' + Date.now();
 
     const newReceipt: GoodsReceipt = {
-      id: 'gr-' + Date.now(),
+      id,
       receiptNumber: nextNumber,
       receiptDate: data.receiptDate || now.split(' ')[0],
       sourceSupplier: data.sourceSupplier,
@@ -1089,28 +1316,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: now,
     };
 
-    // Update inventory balance atomically (Rule 7: Closing Stock = Opening + In - Out + Adj)
-    setInventory((prev) => {
-      const existing = prev.find(
+    try {
+      // 1. Authoritative write to Firestore goodsReceipts
+      await setDoc(doc(db, 'goodsReceipts', id), newReceipt);
+
+      // 2. Authoritative update of inventory balance in Firestore
+      const balId = `bal-${material.id}-${location.id}`;
+      const existingBal = inventory.find(
         (b) => b.materialId === material.id && b.locationId === location.id
       );
 
-      if (existing) {
-        return prev.map((b) => {
-          if (b.id === existing.id) {
-            const newIn = b.qtyIn + data.quantity;
-            return {
-              ...b,
-              qtyIn: newIn,
-              availableStock: b.openingStock + newIn - b.qtyOut,
-              lastTransactionDate: data.receiptDate || now.split(' ')[0],
-            };
-          }
-          return b;
+      if (existingBal) {
+        const newQtyIn = existingBal.qtyIn + data.quantity;
+        const newAvailable = existingBal.openingStock + newQtyIn - existingBal.qtyOut;
+        await updateDoc(doc(db, 'inventory', existingBal.id), {
+          qtyIn: newQtyIn,
+          availableStock: newAvailable,
+          lastTransactionDate: data.receiptDate || now.split(' ')[0],
+          unitCost: material.unitCost,
         });
       } else {
         const newBalance: InventoryBalance = {
-          id: 'bal-' + Date.now(),
+          id: balId,
           materialId: material.id,
           materialCode: material.materialCode,
           materialName: material.materialName,
@@ -1129,14 +1356,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           lastTransactionDate: data.receiptDate || now.split(' ')[0],
           unitCost: material.unitCost,
         };
-        return [newBalance, ...prev];
+        await setDoc(doc(db, 'inventory', balId), newBalance);
       }
-    });
 
-    setGoodsReceipts((prev) => [newReceipt, ...prev]);
-    logAudit('GOODS_RECEIPT_POSTED', 'Barang Masuk', `Penerimaan ${data.quantity} ${material.unit} ${material.materialName} (${nextNumber}) dari ${data.sourceSupplier}`);
-    showToast('success', 'Barang Masuk Berhasil', `Nomor Transaksi: ${nextNumber}. Stok barang telah ditambahkan.`);
-    return true;
+      // 3. Write Audit Log
+      await logAudit(
+        'GOODS_RECEIPT_POSTED',
+        'Barang Masuk',
+        `Penerimaan ${data.quantity} ${material.unit} ${material.materialName} (${nextNumber}) dari ${data.sourceSupplier}`
+      );
+
+      showToast(
+        'success',
+        'Barang Masuk Berhasil Disimpan',
+        `Nomor Transaksi: ${nextNumber}. Kuantitas +${data.quantity} ${material.unit} telah ditambahkan ke ${location.name}.`
+      );
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: addGoodsReceipt]', err);
+      const errMsg = err.message || 'Gagal menyimpan transaksi ke Cloud Firestore.';
+      showToast('error', 'Gagal Mencatat Barang Masuk', errMsg);
+      return false;
+    }
   };
 
   // ----------------------------------------------------
@@ -2233,29 +2474,285 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('success', 'Pengaturan Disimpan', 'Konfigurasi sistem berhasil diperbarui.');
   };
 
+  const seedDemoData = async (): Promise<{ success: boolean; message?: string }> => {
+    if (!currentUser || currentUser.role !== 'ADMIN') {
+      showToast('error', 'Akses Ditolak', 'Hanya Administrator yang dapat menginisialisasi data demo.');
+      return { success: false, message: 'Wewenang tidak mencukupi.' };
+    }
+
+    setIsSeedingDemo(true);
+    showToast('info', 'Memulai Inisialisasi', 'Sedang memuat data master & operasional awal ke Cloud Firestore...');
+
+    try {
+      // 1. Seed Categories
+      for (const cat of INITIAL_CATEGORIES) {
+        await setDoc(doc(db, 'categories', cat.id), cat, { merge: true });
+      }
+
+      // 2. Seed Units
+      for (const un of INITIAL_UNITS) {
+        await setDoc(doc(db, 'units', un.id), un, { merge: true });
+      }
+
+      // 3. Seed Base Locations (Gudang Utama CGK, Gudang Distribusi T3, Buffer Stock GSE)
+      const demoLocations: MasterLocation[] = [
+        {
+          id: 'loc-cgk-wh1',
+          code: 'LOC-CGK-01',
+          name: 'Gudang Utama Soekarno-Hatta (CGK)',
+          locationId: 'loc-cgk-wh1',
+          locationCode: 'LOC-CGK-01',
+          locationName: 'Gudang Utama Soekarno-Hatta (CGK)',
+          type: 'Central Warehouse',
+          picName: 'Budi Santoso',
+          personInCharge: 'Budi Santoso',
+          capacityM2: 1500,
+          address: 'Kawasan Pergudangan Bandara Soekarno-Hatta Blok C-12, Tangerang',
+          description: 'Pusat penerimaan, karantina, dan staging logistik utama PT IAS Support',
+          isActive: true,
+          createdAt: getJakartaTimestamp(),
+          createdBy: currentUser.employeeId,
+          updatedAt: getJakartaTimestamp(),
+        },
+        {
+          id: 'loc-t3-terminal',
+          code: 'LOC-CGK-T3',
+          name: 'Staging Hub Terminal 3 Domestik',
+          locationId: 'loc-t3-terminal',
+          locationCode: 'LOC-CGK-T3',
+          locationName: 'Staging Hub Terminal 3 Domestik',
+          type: 'Hub Distribution',
+          picName: 'Ahmad Fauzi',
+          personInCharge: 'Ahmad Fauzi',
+          capacityM2: 300,
+          address: 'Basement Terminal 3 Bandara CGK, Area Servis Operasional',
+          description: 'Gudang penyangga perlengkapan toilet, plastik sampah, dan chemical harian',
+          isActive: true,
+          createdAt: getJakartaTimestamp(),
+          createdBy: currentUser.employeeId,
+          updatedAt: getJakartaTimestamp(),
+        },
+        {
+          id: 'loc-buffer-gse',
+          code: 'LOC-GSE-BUF',
+          name: 'Buffer Stock Apron GSE Support',
+          locationId: 'loc-buffer-gse',
+          locationCode: 'LOC-GSE-BUF',
+          locationName: 'Buffer Stock Apron GSE Support',
+          type: 'Transit',
+          picName: 'Rudi Hartono',
+          personInCharge: 'Rudi Hartono',
+          capacityM2: 200,
+          address: 'Apron Timur Airside CGK',
+          description: 'Area penyiapan suku cadang, pelumas, dan APD operasional apron darat',
+          isActive: true,
+          createdAt: getJakartaTimestamp(),
+          createdBy: currentUser.employeeId,
+          updatedAt: getJakartaTimestamp(),
+        },
+      ];
+
+      for (const loc of demoLocations) {
+        await setDoc(doc(db, 'locations', loc.id), loc, { merge: true });
+      }
+
+      // 4. Seed Base Materials
+      const demoMaterials: MaterialMaster[] = [
+        {
+          id: 'mat-tis-001',
+          materialId: 'mat-tis-001',
+          materialCode: 'MAT-TIS-001',
+          materialName: 'Hand Towel Paper (HT) 150 Sheets Embossed',
+          categoryId: 'cat-tissue',
+          categoryName: 'Tissue',
+          subcategoryId: 'Toilet Consumables',
+          unitId: 'unit-pack',
+          unit: 'Pack',
+          minimumStock: 100,
+          reorderPoint: 250,
+          defaultLocationId: 'loc-cgk-wh1',
+          defaultLocationName: 'Gudang Utama Soekarno-Hatta (CGK)',
+          variantAttributes: '2-Ply Pure Cellulose',
+          variantValue: 'Pack 150s',
+          unitCost: 12500,
+          description: 'Kertas pengering tangan higienis toilet bandara berstandar internasional',
+          isActive: true,
+          createdAt: getJakartaTimestamp(),
+          createdBy: currentUser.employeeId,
+          updatedAt: getJakartaTimestamp(),
+          updatedBy: currentUser.employeeId,
+        },
+        {
+          id: 'mat-tis-002',
+          materialId: 'mat-tis-002',
+          materialCode: 'MAT-TIS-002',
+          materialName: 'Jumbo Roll Tissue (JRT) 2-Ply 300m',
+          categoryId: 'cat-tissue',
+          categoryName: 'Tissue',
+          subcategoryId: 'Toilet Consumables',
+          unitId: 'unit-roll',
+          unit: 'Roll',
+          minimumStock: 80,
+          reorderPoint: 180,
+          defaultLocationId: 'loc-cgk-wh1',
+          defaultLocationName: 'Gudang Utama Soekarno-Hatta (CGK)',
+          variantAttributes: 'Diameter 23cm, Core 7.5cm',
+          variantValue: 'Roll 300m',
+          unitCost: 28500,
+          description: 'Gulungan tissue jumbo untuk dispenser toilet publik intensitas tinggi',
+          isActive: true,
+          createdAt: getJakartaTimestamp(),
+          createdBy: currentUser.employeeId,
+          updatedAt: getJakartaTimestamp(),
+          updatedBy: currentUser.employeeId,
+        },
+        {
+          id: 'mat-pls-001',
+          materialId: 'mat-pls-001',
+          materialCode: 'MAT-PLS-001',
+          materialName: 'Kantong Plastik Sampah Hitam HD Heavy Duty 80x100cm',
+          categoryId: 'cat-plastic',
+          categoryName: 'Plastic',
+          subcategoryId: 'Trash Bags',
+          unitId: 'unit-pack',
+          unit: 'Pack',
+          minimumStock: 60,
+          reorderPoint: 150,
+          defaultLocationId: 'loc-cgk-wh1',
+          defaultLocationName: 'Gudang Utama Soekarno-Hatta (CGK)',
+          variantAttributes: 'Ketebalan 40 mikron',
+          variantValue: 'Pack isi 20 lembar',
+          unitCost: 19000,
+          description: 'Plastik sampah kuat antibocor untuk tempat sampah stasiun dan terminal',
+          isActive: true,
+          createdAt: getJakartaTimestamp(),
+          createdBy: currentUser.employeeId,
+          updatedAt: getJakartaTimestamp(),
+          updatedBy: currentUser.employeeId,
+        },
+        {
+          id: 'mat-chm-001',
+          materialId: 'mat-chm-001',
+          materialCode: 'MAT-CHM-001',
+          materialName: 'Neutral Floor Cleaner Lemon Fragrance (Jerigen 4L)',
+          categoryId: 'cat-chemical',
+          categoryName: 'Chemical',
+          subcategoryId: 'Cleaning Agents',
+          unitId: 'unit-bottle',
+          unit: 'Btl',
+          minimumStock: 30,
+          reorderPoint: 70,
+          defaultLocationId: 'loc-cgk-wh1',
+          defaultLocationName: 'Gudang Utama Soekarno-Hatta (CGK)',
+          variantAttributes: 'pH 7.0 Food Contact Safe',
+          variantValue: 'Jerigen 4 Liter',
+          unitCost: 65000,
+          description: 'Konsentrat pembersih lantai marmer/granit ramah lingkungan dan wangi segar',
+          isActive: true,
+          createdAt: getJakartaTimestamp(),
+          createdBy: currentUser.employeeId,
+          updatedAt: getJakartaTimestamp(),
+          updatedBy: currentUser.employeeId,
+        },
+        {
+          id: 'mat-eqp-001',
+          materialId: 'mat-eqp-001',
+          materialCode: 'MAT-EQP-001',
+          materialName: 'Morgan Janitorial Cleaning Trolley 3-Tier Multi-Tray',
+          categoryId: 'cat-equipment',
+          categoryName: 'Equipment',
+          subcategoryId: 'Hardware Assets',
+          unitId: 'unit-unit',
+          unit: 'Unit',
+          minimumStock: 5,
+          reorderPoint: 12,
+          defaultLocationId: 'loc-cgk-wh1',
+          defaultLocationName: 'Gudang Utama Soekarno-Hatta (CGK)',
+          variantAttributes: 'Frame Polypropylene Roda Silent',
+          variantValue: 'Standard 3 Susun',
+          unitCost: 1450000,
+          description: 'Trolley kebersihan terpadu dengan kantong sampah kuning dan rak alat',
+          isActive: true,
+          createdAt: getJakartaTimestamp(),
+          createdBy: currentUser.employeeId,
+          updatedAt: getJakartaTimestamp(),
+          updatedBy: currentUser.employeeId,
+        },
+      ];
+
+      for (const mat of demoMaterials) {
+        await setDoc(doc(db, 'materials', mat.id), mat, { merge: true });
+
+        // Initialize zero inventory balance for each material
+        const balId = `bal-${mat.id}-${mat.defaultLocationId}`;
+        const bal: InventoryBalance = {
+          id: balId,
+          materialId: mat.id,
+          materialCode: mat.materialCode,
+          materialName: mat.materialName,
+          categoryId: mat.categoryId,
+          categoryName: mat.categoryName,
+          unit: mat.unit,
+          locationId: mat.defaultLocationId!,
+          locationName: mat.defaultLocationName || 'Gudang Utama',
+          variantValue: mat.variantValue,
+          openingStock: 0,
+          qtyIn: 0,
+          qtyOut: 0,
+          availableStock: 0,
+          minimumStock: mat.minimumStock,
+          reorderPoint: mat.reorderPoint,
+          lastTransactionDate: getJakartaTimestamp().split(' ')[0],
+          unitCost: mat.unitCost,
+        };
+        await setDoc(doc(db, 'inventory', balId), bal, { merge: true });
+      }
+
+      await logAudit(
+        'DEMO_DATA_SEEDED',
+        'Pengaturan',
+        'Administrator menginisialisasi dataset sampel ke Cloud Firestore'
+      );
+      showToast(
+        'success',
+        'Inisialisasi Berhasil',
+        'Dataset master material, kategori, satuan, dan lokasi telah tersimpan di Cloud Firestore.'
+      );
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore Error: seedDemoData]', err);
+      const errMsg = err.message || 'Gagal memuat data demo ke Cloud Firestore.';
+      showToast('error', 'Gagal Inisialisasi Data Demo', errMsg);
+      return { success: false, message: errMsg };
+    } finally {
+      setIsSeedingDemo(false);
+    }
+  };
+
+  const clearLocalCache = () => {
+    try {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(STORAGE_KEY_PREFIX)) {
+          if (key !== STORAGE_KEY_PREFIX + 'current_user_id') {
+            keysToRemove.push(key);
+          }
+        }
+      }
+      keysToRemove.forEach((k) => localStorage.removeItem(k));
+      showToast(
+        'info',
+        'Cache Lokal Direset',
+        'Cache peramban telah dikosongkan. Data sedang disinkronkan ulang langsung dari Cloud Firestore tanpa menghapus database.'
+      );
+    } catch (err: any) {
+      console.error('Error clearing local cache:', err);
+    }
+  };
+
   const resetToInitialData = () => {
-    const currentAuthedUser = currentUser;
-    localStorage.clear();
-    setUsers(INITIAL_USERS);
-    setMaterials(INITIAL_MATERIALS);
-    setLocations(INITIAL_LOCATIONS);
-    setCategories(INITIAL_CATEGORIES);
-    setUnits(INITIAL_UNITS);
-    setInventory(INITIAL_INVENTORY);
-    setConsumptions(INITIAL_CONSUMPTION_RECORDS);
-    setMorganTrolleys(INITIAL_MORGAN_TROLLEYS);
-    setSupplyRequests(INITIAL_SUPPLY_REQUESTS);
-    setGoodsReceipts(INITIAL_GOODS_RECEIPTS);
-    setGoodsIssues(INITIAL_GOODS_ISSUES);
-    setStockTransfers(INITIAL_STOCK_TRANSFERS);
-    setStockOpnames(INITIAL_STOCK_OPNAMES);
-    setApprovals(INITIAL_APPROVALS);
-    setAuditLogs(INITIAL_AUDIT_LOGS);
-    setRequestingUnits(INITIAL_REQUESTING_UNITS);
-    setSuppliers(INITIAL_SUPPLIERS);
-    setSettings(INITIAL_SETTINGS);
-    setCurrentUser(currentAuthedUser);
-    showToast('info', 'Reset Berhasil', 'Data demo sistem telah diatur ulang tanpa memutus sesi login aktif.');
+    clearLocalCache();
   };
 
   return (
@@ -2271,6 +2768,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resetPassword,
         logout,
         switchRole,
+        syncLoading,
+        syncErrors,
+        seedDemoData,
+        clearLocalCache,
         users,
         materials,
         activeMaterials,
@@ -2303,9 +2804,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addMaterial,
         updateMaterial,
         toggleMaterialStatus,
+        deleteMaterial,
         addLocation,
         updateLocation,
         toggleLocationStatus,
+        deleteLocation,
         saveCategory,
         toggleCategoryStatus,
         saveUnit,

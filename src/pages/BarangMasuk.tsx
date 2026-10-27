@@ -13,33 +13,39 @@ import {
   X,
   Lock,
   Download,
+  AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
 
 export const BarangMasuk: React.FC = () => {
   const {
     goodsReceipts,
-    items,
-    suppliers,
+    activeMaterials,
+    materials,
+    activeLocations,
     locations,
+    suppliers,
     addGoodsReceipt,
     currentUser,
     can,
     showToast,
+    syncLoading,
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSupplier, setSelectedSupplier] = useState('ALL');
   const [modalOpen, setModalOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
     receiptDate: new Date().toISOString().slice(0, 10),
     sourceSupplier: suppliers[0]?.name || '',
     referenceDocument: '',
-    itemId: items[0]?.id || '',
+    materialId: activeMaterials[0]?.id || '',
     quantity: 1,
-    destinationLocationId: locations[0]?.id || '',
+    destinationLocationId: activeLocations[0]?.id || locations[0]?.id || '',
     notes: '',
   });
 
@@ -62,17 +68,23 @@ export const BarangMasuk: React.FC = () => {
       showToast('error', 'Akses Dibatasi', perm.reason || 'Peran Site Head hanya dapat melihat riwayat barang masuk.');
       return;
     }
+    setFormData((prev) => ({
+      ...prev,
+      materialId: prev.materialId || activeMaterials[0]?.id || materials[0]?.id || '',
+      destinationLocationId: prev.destinationLocationId || activeLocations[0]?.id || locations[0]?.id || '',
+      sourceSupplier: prev.sourceSupplier || suppliers[0]?.name || '',
+    }));
     setModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const selectedItem = items.find((i) => i.id === formData.itemId);
+    const selectedMaterial = materials.find((m) => m.id === formData.materialId);
     const selectedLoc = locations.find((l) => l.id === formData.destinationLocationId);
 
-    if (!selectedItem) {
-      showToast('error', 'Validasi Gagal', 'Silakan pilih item barang.');
+    if (!selectedMaterial) {
+      showToast('error', 'Validasi Gagal', 'Silakan pilih material barang yang terdaftar di Master Data.');
       return;
     }
 
@@ -86,32 +98,42 @@ export const BarangMasuk: React.FC = () => {
       return;
     }
 
-    const success = addGoodsReceipt({
-      receiptDate: formData.receiptDate,
-      sourceSupplier: formData.sourceSupplier,
-      referenceDocument: formData.referenceDocument,
-      itemId: selectedItem.id,
-      itemCode: selectedItem.itemCode,
-      itemName: selectedItem.itemName,
-      quantity: Number(formData.quantity),
-      unit: selectedItem.unit,
-      destinationLocationId: selectedLoc ? selectedLoc.id : selectedItem.locationId,
-      destinationLocationName: selectedLoc ? selectedLoc.name : selectedItem.locationName,
-      notes: formData.notes,
-    });
+    if (!selectedLoc) {
+      showToast('error', 'Validasi Gagal', 'Silakan tentukan lokasi gudang tujuan.');
+      return;
+    }
 
-    if (success) {
-      setModalOpen(false);
-      // Reset form
-      setFormData({
-        receiptDate: new Date().toISOString().slice(0, 10),
-        sourceSupplier: suppliers[0]?.name || '',
-        referenceDocument: '',
-        itemId: items[0]?.id || '',
-        quantity: 1,
-        destinationLocationId: locations[0]?.id || '',
-        notes: '',
+    setIsSubmitting(true);
+    try {
+      const success = await addGoodsReceipt({
+        receiptDate: formData.receiptDate,
+        sourceSupplier: formData.sourceSupplier,
+        referenceDocument: formData.referenceDocument,
+        itemId: selectedMaterial.id,
+        itemCode: selectedMaterial.materialCode,
+        itemName: selectedMaterial.materialName,
+        quantity: Number(formData.quantity),
+        unit: selectedMaterial.unit,
+        destinationLocationId: selectedLoc.id,
+        destinationLocationName: selectedLoc.name,
+        notes: formData.notes,
       });
+
+      if (success) {
+        setModalOpen(false);
+        // Reset form
+        setFormData({
+          receiptDate: new Date().toISOString().slice(0, 10),
+          sourceSupplier: suppliers[0]?.name || '',
+          referenceDocument: '',
+          materialId: activeMaterials[0]?.id || '',
+          quantity: 1,
+          destinationLocationId: activeLocations[0]?.id || locations[0]?.id || '',
+          notes: '',
+        });
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -334,20 +356,39 @@ export const BarangMasuk: React.FC = () => {
                 />
               </div>
 
+              {activeMaterials.length === 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-amber-800">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold">Belum Ada Master Material Aktif</div>
+                    <div className="text-[11px] text-amber-700 mt-0.5">
+                      Tambahkan data material pada modul Master Data terlebih dahulu sebelum dapat mencatat penerimaan barang masuk.
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="sm:col-span-2">
-                  <label className="text-slate-600 block mb-1 font-semibold">Item Barang</label>
+                  <label className="text-slate-600 block mb-1 font-semibold">
+                    Material / Komponen Barang <span className="text-rose-500">*</span>
+                  </label>
                   <select
                     required
-                    value={formData.itemId}
-                    onChange={(e) => setFormData({ ...formData, itemId: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
+                    disabled={activeMaterials.length === 0}
+                    value={formData.materialId}
+                    onChange={(e) => setFormData({ ...formData, materialId: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white disabled:bg-slate-100 disabled:text-slate-400 font-medium"
                   >
-                    {items.map((it) => (
-                      <option key={it.id} value={it.id}>
-                        {it.itemCode} - {it.itemName} ({it.unit})
-                      </option>
-                    ))}
+                    {activeMaterials.length === 0 ? (
+                      <option value="">-- Tidak ada material aktif --</option>
+                    ) : (
+                      activeMaterials.map((mat) => (
+                        <option key={mat.id} value={mat.id}>
+                          {mat.materialCode} — {mat.materialName} ({mat.unit})
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
 
@@ -357,6 +398,7 @@ export const BarangMasuk: React.FC = () => {
                     type="number"
                     min="1"
                     required
+                    disabled={activeMaterials.length === 0}
                     value={formData.quantity}
                     onChange={(e) => setFormData({ ...formData, quantity: Number(e.target.value) })}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] font-mono font-bold"
@@ -372,9 +414,9 @@ export const BarangMasuk: React.FC = () => {
                   onChange={(e) => setFormData({ ...formData, destinationLocationId: e.target.value })}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
                 >
-                  {locations.map((loc) => (
+                  {(activeLocations.length > 0 ? activeLocations : locations).map((loc) => (
                     <option key={loc.id} value={loc.id}>
-                      {loc.code} - {loc.name}
+                      {loc.code} - {loc.name} ({loc.type})
                     </option>
                   ))}
                 </select>
@@ -392,23 +434,32 @@ export const BarangMasuk: React.FC = () => {
               </div>
 
               <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-[11px] text-emerald-900 leading-relaxed">
-                <span className="font-bold">Pemberitahuan Sistem:</span> Transaksi ini akan langsung memposting penambahan stok fisik inventaris dan tercatat pada Audit Trail secara permanen atas nama <strong>{currentUser?.fullName}</strong>.
+                <span className="font-bold">Pemberitahuan Sistem:</span> Transaksi ini akan langsung memposting penambahan stok fisik inventaris ke Cloud Firestore dan tercatat pada Audit Trail secara permanen atas nama <strong>{currentUser?.fullName}</strong>.
               </div>
             </div>
 
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => setModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 transition disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46]"
+                disabled={activeMaterials.length === 0 || isSubmitting}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46] transition flex items-center gap-1.5 disabled:bg-slate-300 disabled:cursor-not-allowed"
               >
-                Posting Barang Masuk
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan ke Firestore...</span>
+                  </>
+                ) : (
+                  <span>Posting Barang Masuk</span>
+                )}
               </button>
             </div>
           </form>

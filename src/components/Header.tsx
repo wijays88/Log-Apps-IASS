@@ -21,7 +21,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ onToggleMobileSidebar, onOpenExcelModal }) => {
-  const { currentUser, approvals, setActiveNav, resetToInitialData, logout } = useApp();
+  const { currentUser, approvals, setActiveNav, resetToInitialData, clearLocalCache, logout } = useApp();
   const [currentTime, setCurrentTime] = useState<string>('');
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
 
@@ -208,11 +208,12 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileSidebar, onOpenExc
 
                   {currentUser?.role === 'ADMIN' && (
                     <button
-                      onClick={resetToInitialData}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-amber-700 hover:bg-amber-50 rounded-lg transition"
+                      onClick={clearLocalCache}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-50 rounded-lg transition"
+                      title="Menghapus cache browser lokal dan memuat ulang data murni dari Cloud Firestore"
                     >
-                      <RefreshCw className="w-3.5 h-3.5 text-amber-600" />
-                      <span>Reset Data Demo PT IAS</span>
+                      <RefreshCw className="w-3.5 h-3.5 text-emerald-700" />
+                      <span>Sinkron Ulang Firestore</span>
                     </button>
                   )}
 
