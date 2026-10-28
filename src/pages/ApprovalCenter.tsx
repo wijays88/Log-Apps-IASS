@@ -53,7 +53,7 @@ export const ApprovalCenter: React.FC = () => {
     );
   });
 
-  const handleStartApprove = (item: ApprovalRequest) => {
+  const handleStartApprove = async (item: ApprovalRequest) => {
     const perm = can('APPROVE_TRANSACTIONS');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Administrator yang memiliki wewenang persetujuan.');
@@ -64,11 +64,11 @@ export const ApprovalCenter: React.FC = () => {
       setApproveItem(item);
       setApprovedQty(item.details.quantity);
     } else if (item.type === 'STOCK_OPNAME_ADJUSTMENT') {
-      approveOpnameAdjustment(item.referenceId);
+      await approveOpnameAdjustment(item.referenceId);
     }
   };
 
-  const handleConfirmGoodsIssueApprove = (e: React.FormEvent) => {
+  const handleConfirmGoodsIssueApprove = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!approveItem) return;
 
@@ -77,7 +77,7 @@ export const ApprovalCenter: React.FC = () => {
       return;
     }
 
-    approveGoodsIssue(approveItem.referenceId, approvedQty);
+    await approveGoodsIssue(approveItem.referenceId, approvedQty);
     setApproveItem(null);
   };
 
@@ -91,7 +91,7 @@ export const ApprovalCenter: React.FC = () => {
     setRejectionReason('');
   };
 
-  const handleConfirmReject = (e: React.FormEvent) => {
+  const handleConfirmReject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!rejectItem) return;
 
@@ -101,9 +101,9 @@ export const ApprovalCenter: React.FC = () => {
     }
 
     if (rejectItem.type === 'BARANG_KELUAR') {
-      rejectGoodsIssue(rejectItem.referenceId, rejectionReason);
+      await rejectGoodsIssue(rejectItem.referenceId, rejectionReason);
     } else if (rejectItem.type === 'STOCK_OPNAME_ADJUSTMENT') {
-      rejectOpnameAdjustment(rejectItem.referenceId, rejectionReason);
+      await rejectOpnameAdjustment(rejectItem.referenceId, rejectionReason);
     }
 
     setRejectItem(null);

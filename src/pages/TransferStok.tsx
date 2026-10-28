@@ -20,6 +20,8 @@ export const TransferStok: React.FC = () => {
     stockTransfers,
     items,
     locations,
+    activeLocations,
+    activeRequestingUnits,
     createStockTransfer,
     receiveStockTransfer,
     currentUser,
@@ -29,13 +31,16 @@ export const TransferStok: React.FC = () => {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
-    originLocationId: locations[0]?.id || '',
-    destinationLocationId: locations[1]?.id || '',
+    originLocationId: activeLocations[0]?.id || locations[0]?.id || '',
+    destinationLocationId: activeLocations[1]?.id || locations[1]?.id || '',
     itemId: items[0]?.id || '',
     quantity: 1,
+    requesterUnitId: activeRequestingUnits[0]?.id || '',
+    requestingUnit: activeRequestingUnits[0]?.name || '',
     notes: '',
   });
 
@@ -48,7 +53,8 @@ export const TransferStok: React.FC = () => {
       tr.itemName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       tr.originLocationName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       tr.destinationLocationName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      tr.requestingUser.toLowerCase().includes(searchTerm.toLowerCase())
+      tr.requestingUser.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (tr.requestingUnit && tr.requestingUnit.toLowerCase().includes(searchTerm.toLowerCase()))
     );
   });
 
@@ -61,7 +67,7 @@ export const TransferStok: React.FC = () => {
     setModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (formData.originLocationId === formData.destinationLocationId) {
@@ -88,33 +94,44 @@ export const TransferStok: React.FC = () => {
       return;
     }
 
-    const success = createStockTransfer({
-      originLocationId: formData.originLocationId,
-      destinationLocationId: formData.destinationLocationId,
-      itemId: selectedItem.id,
-      quantity: Number(formData.quantity),
-      notes: formData.notes,
-    });
+    const resolvedReq = activeRequestingUnits.find((u) => u.id === formData.requesterUnitId);
 
-    if (success) {
-      setModalOpen(false);
-      setFormData({
-        originLocationId: locations[0]?.id || '',
-        destinationLocationId: locations[1]?.id || '',
-        itemId: items[0]?.id || '',
-        quantity: 1,
-        notes: '',
+    setIsSubmitting(true);
+    try {
+      const success = await createStockTransfer({
+        originLocationId: formData.originLocationId,
+        destinationLocationId: formData.destinationLocationId,
+        itemId: selectedItem.id,
+        quantity: Number(formData.quantity),
+        requesterUnitId: resolvedReq?.id,
+        requestingUnit: resolvedReq?.name,
+        notes: formData.notes,
       });
+
+      if (success) {
+        setModalOpen(false);
+        setFormData({
+          originLocationId: activeLocations[0]?.id || locations[0]?.id || '',
+          destinationLocationId: activeLocations[1]?.id || locations[1]?.id || '',
+          itemId: items[0]?.id || '',
+          quantity: 1,
+          requesterUnitId: activeRequestingUnits[0]?.id || '',
+          requestingUnit: activeRequestingUnits[0]?.name || '',
+          notes: '',
+        });
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleReceive = (transferId: string) => {
+  const handleReceive = async (transferId: string) => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
       showToast('error', 'Akses Dibatasi', perm.reason || 'Peran Site Head bersifat Read-Only.');
       return;
     }
-    receiveStockTransfer(transferId);
+    await receiveStockTransfer(transferId);
   };
 
   return (
@@ -350,6 +367,30 @@ export const TransferStok: React.FC = () => {
                     ))}
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="text-slate-600 block mb-1 font-semibold">Unit Pemohon / Inisiator Mutasi (Opsional)</label>
+                <select
+                  value={formData.requesterUnitId}
+                  onChange={(e) => {
+                    const selectedId = e.target.value;
+                    const found = activeRequestingUnits.find((u) => u.id === selectedId);
+                    setFormData({
+                      ...formData,
+                      requesterUnitId: selectedId,
+                      requestingUnit: found ? found.name : '',
+                    });
+                  }}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white font-medium"
+                >
+                  <option value="">-- Mutasi Rutin Antar Gudang (Tanpa Unit Pemohon) --</option>
+                  {activeRequestingUnits.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      [{u.code || u.unitCode}] {u.name || u.unitName} — {u.division}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>

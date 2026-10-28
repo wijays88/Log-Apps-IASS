@@ -125,7 +125,9 @@ interface AppContextType {
   approvals: ApprovalRequest[];
   auditLogs: AuditLog[];
   requestingUnits: MasterRequestingUnit[];
+  activeRequestingUnits: MasterRequestingUnit[];
   suppliers: MasterSupplier[];
+  activeSuppliers: MasterSupplier[];
   settings: SystemSettings;
   activeNav: string;
   setActiveNav: (nav: string) => void;
@@ -157,6 +159,16 @@ interface AppContextType {
   saveUnit: (unit: Partial<MasterUnit>) => Promise<boolean>;
   toggleUnitStatus: (id: string) => Promise<boolean>;
 
+  // Unit Pemohon (Requester Units) Actions
+  addRequestingUnit: (data: Omit<MasterRequestingUnit, 'id' | 'createdAt' | 'createdBy' | 'updatedAt' | 'updatedBy'>) => Promise<{ success: boolean; message?: string; unit?: MasterRequestingUnit }>;
+  updateRequestingUnit: (id: string, updates: Partial<MasterRequestingUnit>) => Promise<{ success: boolean; message?: string }>;
+  toggleRequestingUnitStatus: (id: string) => Promise<boolean>;
+  deleteRequestingUnit: (id: string) => Promise<{ success: boolean; message?: string }>;
+
+  // Suppliers Actions
+  saveSupplier: (sup: Partial<MasterSupplier>) => Promise<boolean>;
+  deleteSupplier: (id: string) => Promise<{ success: boolean; message?: string }>;
+
   // Operational Inventory Actions
   addGoodsReceipt: (receipt: {
     receiptDate: string;
@@ -175,6 +187,7 @@ interface AppContextType {
 
   createGoodsIssue: (issue: {
     requestingUnit: string;
+    requesterUnitId?: string;
     destination: string;
     materialId?: string;
     itemId?: string;
@@ -182,10 +195,10 @@ interface AppContextType {
     requestedQuantity: number;
     purpose: string;
     notes?: string;
-  }) => boolean;
+  }) => Promise<boolean>;
 
-  approveGoodsIssue: (issueId: string, approvedQty: number) => boolean;
-  rejectGoodsIssue: (issueId: string, reason: string) => boolean;
+  approveGoodsIssue: (issueId: string, approvedQty: number) => Promise<boolean>;
+  rejectGoodsIssue: (issueId: string, reason: string) => Promise<boolean>;
 
   createStockTransfer: (transfer: {
     originLocationId: string;
@@ -193,9 +206,11 @@ interface AppContextType {
     materialId?: string;
     itemId?: string;
     quantity: number;
+    requestingUnit?: string;
+    requesterUnitId?: string;
     notes?: string;
-  }) => boolean;
-  receiveStockTransfer: (transferId: string) => boolean;
+  }) => Promise<boolean>;
+  receiveStockTransfer: (transferId: string) => Promise<boolean>;
 
   createStockOpname: (opname: {
     locationId: string;
@@ -204,9 +219,9 @@ interface AppContextType {
     physicalQuantity: number;
     varianceReason: string;
     notes?: string;
-  }) => boolean;
-  approveOpnameAdjustment: (opnameId: string) => boolean;
-  rejectOpnameAdjustment: (opnameId: string, reason: string) => boolean;
+  }) => Promise<boolean>;
+  approveOpnameAdjustment: (opnameId: string) => Promise<boolean>;
+  rejectOpnameAdjustment: (opnameId: string, reason: string) => Promise<boolean>;
 
   // Consumption (Tissue, Plastik, Chemical)
   recordConsumption: (record: Omit<ConsumptionRecord, 'id' | 'createdAt'>) => boolean;
@@ -431,7 +446,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     };
 
-    let pendingLoads = 15;
+    let pendingLoads = 17;
     const markLoaded = () => {
       pendingLoads--;
       if (pendingLoads <= 0) {
@@ -443,6 +458,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const unsubLocations = bindSync('locations', setLocations, markLoaded);
     const unsubCategories = bindSync('categories', setCategories, markLoaded);
     const unsubUnits = bindSync('units', setUnits, markLoaded);
+    const unsubReqUnits = bindSync('requestingUnits', setRequestingUnits, markLoaded);
+    const unsubSuppliers = bindSync('suppliers', setSuppliers, markLoaded);
     const unsubInventory = bindSync('inventory', setInventory, markLoaded);
     const unsubReceipts = bindSync('goodsReceipts', setGoodsReceipts, markLoaded);
     const unsubIssues = bindSync('goodsIssues', setGoodsIssues, markLoaded);
@@ -471,6 +488,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubLocations();
       unsubCategories();
       unsubUnits();
+      unsubReqUnits();
+      unsubSuppliers();
       unsubInventory();
       unsubReceipts();
       unsubIssues();
@@ -486,11 +505,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [currentUser?.id]);
 
-  // Derived active dropdown lists (Rule: Inactive materials and locations cannot be selected in new transactions)
+  // Derived active dropdown lists (Rule: Inactive master entities cannot be selected in new transactions)
   const activeMaterials = useMemo(() => materials.filter((m) => m.isActive), [materials]);
   const activeLocations = useMemo(() => locations.filter((l) => l.isActive), [locations]);
   const activeCategories = useMemo(() => categories.filter((c) => c.isActive), [categories]);
   const activeUnits = useMemo(() => units.filter((u) => u.isActive), [units]);
+  const activeRequestingUnits = useMemo(() => requestingUnits.filter((u) => u.isActive !== false), [requestingUnits]);
+  const activeSuppliers = useMemo(() => suppliers.filter((s) => s.isActive !== false), [suppliers]);
 
   // Sync to local storage for offline resilience
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'users', JSON.stringify(users)); }, [users]);
@@ -498,6 +519,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'locations', JSON.stringify(locations)); }, [locations]);
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'categories', JSON.stringify(categories)); }, [categories]);
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'units', JSON.stringify(units)); }, [units]);
+  useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'req_units', JSON.stringify(requestingUnits)); }, [requestingUnits]);
+  useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'suppliers', JSON.stringify(suppliers)); }, [suppliers]);
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'inventory', JSON.stringify(inventory)); }, [inventory]);
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'consumptions', JSON.stringify(consumptions)); }, [consumptions]);
   useEffect(() => { localStorage.setItem(STORAGE_KEY_PREFIX + 'trolleys', JSON.stringify(morganTrolleys)); }, [morganTrolleys]);
@@ -1246,6 +1269,282 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // ----------------------------------------------------
+  // UNIT PEMOHON (REQUESTER UNITS) (Cloud Firestore Authoritative)
+  // ----------------------------------------------------
+  const addRequestingUnit = async (
+    data: Omit<MasterRequestingUnit, 'id' | 'createdAt' | 'createdBy' | 'updatedAt' | 'updatedBy'>
+  ): Promise<{ success: boolean; message?: string; unit?: MasterRequestingUnit }> => {
+    const perm = can('MANAGE_MASTER_DATA');
+    if (!perm.allowed) {
+      showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
+      return { success: false, message: perm.reason || 'Akses ditolak.' };
+    }
+
+    const trimmedCode = (data.code || data.unitCode || '').trim().toUpperCase();
+    const trimmedName = (data.name || data.unitName || '').trim();
+
+    if (!trimmedCode) {
+      return { success: false, message: 'Kode Unit Pemohon wajib diisi.' };
+    }
+    if (!trimmedName) {
+      return { success: false, message: 'Nama Unit Pemohon wajib diisi.' };
+    }
+
+    // Duplicate check for code (case-insensitive)
+    const duplicateCode = requestingUnits.some(
+      (u) => (u.code?.toUpperCase() === trimmedCode || u.unitCode?.toUpperCase() === trimmedCode)
+    );
+    if (duplicateCode) {
+      return {
+        success: false,
+        message: `Kode Unit Pemohon "${trimmedCode}" sudah terdaftar. Gunakan kode lain.`,
+      };
+    }
+
+    // Duplicate check for name (case-insensitive)
+    const duplicateName = requestingUnits.some(
+      (u) => (u.name?.toLowerCase() === trimmedName.toLowerCase() || u.unitName?.toLowerCase() === trimmedName.toLowerCase())
+    );
+    if (duplicateName) {
+      return {
+        success: false,
+        message: `Nama Unit Pemohon "${trimmedName}" sudah terdaftar. Gunakan nama yang berbeda.`,
+      };
+    }
+
+    const cleanCode = trimmedCode.replace(/[^A-Z0-9_-]/g, '');
+    const id = `UP-${cleanCode || Date.now()}`;
+    const now = getJakartaTimestamp();
+    const userLabel = currentUser ? `${currentUser.fullName} (${currentUser.employeeId})` : 'System';
+
+    const newUnit: MasterRequestingUnit = {
+      id,
+      code: trimmedCode,
+      unitCode: trimmedCode,
+      name: trimmedName,
+      unitName: trimmedName,
+      division: (data.division || 'Umum').trim(),
+      contactPerson: (data.contactPerson || '-').trim(),
+      description: (data.description || '').trim(),
+      isActive: data.isActive !== false,
+      status: data.isActive !== false ? 'Active' : 'Inactive',
+      createdAt: now,
+      createdBy: userLabel,
+      updatedAt: now,
+      updatedBy: userLabel,
+    };
+
+    try {
+      await setDoc(doc(db, 'requestingUnits', id), newUnit);
+      await logAudit('REQUESTING_UNIT_CREATED', 'Master Data', `Mendaftarkan Unit Pemohon baru: ${trimmedName} (${trimmedCode})`);
+      showToast('success', 'Unit Pemohon Tersimpan', `Unit Pemohon ${trimmedName} (${trimmedCode}) berhasil ditambahkan ke Cloud Firestore.`);
+      return { success: true, unit: newUnit };
+    } catch (err: any) {
+      console.error('[Firestore Error: addRequestingUnit]', err);
+      showToast('error', 'Gagal Menambahkan Unit Pemohon', err.message || 'Kesalahan saat menyimpan ke database.');
+      return { success: false, message: err.message || 'Gagal menyimpan ke Firestore.' };
+    }
+  };
+
+  const updateRequestingUnit = async (
+    id: string,
+    updates: Partial<MasterRequestingUnit>
+  ): Promise<{ success: boolean; message?: string }> => {
+    const perm = can('MANAGE_MASTER_DATA');
+    if (!perm.allowed) {
+      showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
+      return { success: false, message: perm.reason || 'Akses ditolak.' };
+    }
+
+    const current = requestingUnits.find((u) => u.id === id);
+    if (!current) {
+      return { success: false, message: 'Data Unit Pemohon tidak ditemukan.' };
+    }
+
+    const trimmedCode = updates.code ? updates.code.trim().toUpperCase() : current.code;
+    const trimmedName = updates.name ? updates.name.trim() : current.name;
+
+    // Check duplicate code against other records
+    if (trimmedCode) {
+      const duplicateCode = requestingUnits.some(
+        (u) => u.id !== id && (u.code?.toUpperCase() === trimmedCode || u.unitCode?.toUpperCase() === trimmedCode)
+      );
+      if (duplicateCode) {
+        return { success: false, message: `Kode Unit Pemohon "${trimmedCode}" sudah dipakai oleh unit lain.` };
+      }
+    }
+
+    // Check duplicate name against other records
+    if (trimmedName) {
+      const duplicateName = requestingUnits.some(
+        (u) => u.id !== id && (u.name?.toLowerCase() === trimmedName.toLowerCase() || u.unitName?.toLowerCase() === trimmedName.toLowerCase())
+      );
+      if (duplicateName) {
+        return { success: false, message: `Nama Unit Pemohon "${trimmedName}" sudah dipakai oleh unit lain.` };
+      }
+    }
+
+    const now = getJakartaTimestamp();
+    const userLabel = currentUser ? `${currentUser.fullName} (${currentUser.employeeId})` : 'System';
+
+    const merged: Partial<MasterRequestingUnit> = {
+      ...updates,
+      code: trimmedCode,
+      unitCode: trimmedCode,
+      name: trimmedName,
+      unitName: trimmedName,
+      updatedAt: now,
+      updatedBy: userLabel,
+    };
+    if (typeof updates.isActive === 'boolean') {
+      merged.status = updates.isActive ? 'Active' : 'Inactive';
+    }
+
+    try {
+      await updateDoc(doc(db, 'requestingUnits', id), merged);
+      await logAudit('REQUESTING_UNIT_UPDATED', 'Master Data', `Memperbarui Unit Pemohon: ${trimmedName} (${trimmedCode})`);
+      showToast('success', 'Perubahan Tersimpan', `Unit Pemohon ${trimmedName} berhasil diperbarui di Cloud Firestore.`);
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore Error: updateRequestingUnit]', err);
+      showToast('error', 'Gagal Memperbarui Unit Pemohon', err.message || 'Kesalahan database.');
+      return { success: false, message: err.message || 'Gagal memperbarui ke Firestore.' };
+    }
+  };
+
+  const toggleRequestingUnitStatus = async (id: string): Promise<boolean> => {
+    const target = requestingUnits.find((u) => u.id === id);
+    if (!target) return false;
+    const newActive = !target.isActive;
+    const now = getJakartaTimestamp();
+    const userLabel = currentUser ? `${currentUser.fullName} (${currentUser.employeeId})` : 'System';
+
+    try {
+      await updateDoc(doc(db, 'requestingUnits', id), {
+        isActive: newActive,
+        status: newActive ? 'Active' : 'Inactive',
+        updatedAt: now,
+        updatedBy: userLabel,
+      });
+      showToast('info', 'Status Unit Diubah', `Unit Pemohon ${target.name} kini ${newActive ? 'Aktif' : 'Non-Aktif'}.`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: toggleRequestingUnitStatus]', err);
+      showToast('error', 'Gagal Mengubah Status', err.message);
+      return false;
+    }
+  };
+
+  const deleteRequestingUnit = async (id: string): Promise<{ success: boolean; message?: string }> => {
+    const perm = can('MANAGE_MASTER_DATA');
+    if (!perm.allowed || currentUser?.role !== 'ADMIN') {
+      showToast('error', 'Akses Ditolak', 'Hanya Administrator yang memiliki wewenang menghapus Unit Pemohon.');
+      return { success: false, message: 'Wewenang tidak mencukupi.' };
+    }
+
+    const target = requestingUnits.find((u) => u.id === id);
+    if (!target) {
+      return { success: false, message: 'Data Unit Pemohon tidak ditemukan.' };
+    }
+
+    // Safeguard check: Verify no transactions reference this unit
+    const referencedInIssues = goodsIssues.filter(
+      (gi) => gi.requesterUnitId === id || (gi.requestingUnit && target.name && gi.requestingUnit.toLowerCase() === target.name.toLowerCase())
+    );
+    const referencedInTransfers = stockTransfers.filter(
+      (st) => st.requesterUnitId === id || (st.requestingUnit && target.name && st.requestingUnit.toLowerCase() === target.name.toLowerCase())
+    );
+    const referencedInSupplyRequests = supplyRequests.filter(
+      (sr) => sr.requesterUnitId === id || (sr.requestingUnit && target.name && sr.requestingUnit.toLowerCase() === target.name.toLowerCase())
+    );
+
+    const totalRefs = referencedInIssues.length + referencedInTransfers.length + referencedInSupplyRequests.length;
+    if (totalRefs > 0) {
+      const msg = `Unit Pemohon "${target.name}" (${target.code}) tidak dapat dihapus karena tercatat dalam ${totalRefs} transaksi operasional (${referencedInIssues.length} Pengeluaran Barang, ${referencedInTransfers.length} Transfer, ${referencedInSupplyRequests.length} Permohonan). Anda dapat menonaktifkannya sebagai alternatif.`;
+      showToast('error', 'Hapus Ditolak (Data Berelasi)', msg);
+      return { success: false, message: msg };
+    }
+
+    try {
+      await deleteDoc(doc(db, 'requestingUnits', id));
+      await logAudit('REQUESTING_UNIT_DELETED', 'Master Data', `Menghapus Unit Pemohon: ${target.name} (${target.code})`);
+      showToast('success', 'Unit Pemohon Dihapus', `Unit Pemohon ${target.name} (${target.code}) berhasil dihapus.`);
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore Error: deleteRequestingUnit]', err);
+      showToast('error', 'Gagal Menghapus Unit Pemohon', err.message);
+      return { success: false, message: err.message };
+    }
+  };
+
+  // ----------------------------------------------------
+  // SUPPLIER MASTER (Cloud Firestore Authoritative)
+  // ----------------------------------------------------
+  const saveSupplier = async (supData: Partial<MasterSupplier>): Promise<boolean> => {
+    const perm = can('MANAGE_MASTER_DATA');
+    if (!perm.allowed) {
+      showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
+      return false;
+    }
+
+    try {
+      if (supData.id) {
+        await updateDoc(doc(db, 'suppliers', supData.id), supData);
+        showToast('success', 'Pemasok Disimpan', `Pemasok ${supData.name} berhasil diperbarui di Cloud Firestore.`);
+      } else {
+        const id = 'sup-' + (supData.code?.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || Date.now());
+        const newSup: MasterSupplier = {
+          id,
+          code: supData.code?.toUpperCase() || `SUP-${suppliers.length + 1}`,
+          name: supData.name || 'Pemasok Baru',
+          contactPerson: supData.contactPerson || '-',
+          phone: supData.phone || '-',
+          email: supData.email || '-',
+          address: supData.address || '-',
+          isActive: true,
+        };
+        await setDoc(doc(db, 'suppliers', id), newSup);
+        showToast('success', 'Pemasok Ditambahkan', `Pemasok ${newSup.name} berhasil didaftarkan di Cloud Firestore.`);
+      }
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: saveSupplier]', err);
+      showToast('error', 'Gagal Menyimpan Pemasok', err.message);
+      return false;
+    }
+  };
+
+  const deleteSupplier = async (id: string): Promise<{ success: boolean; message?: string }> => {
+    const perm = can('MANAGE_MASTER_DATA');
+    if (!perm.allowed || currentUser?.role !== 'ADMIN') {
+      showToast('error', 'Akses Ditolak', 'Hanya Administrator yang dapat menghapus data pemasok.');
+      return { success: false, message: 'Wewenang tidak mencukupi.' };
+    }
+    const target = suppliers.find((s) => s.id === id);
+    if (!target) return { success: false, message: 'Pemasok tidak ditemukan.' };
+
+    const refReceipts = goodsReceipts.filter(
+      (gr) => gr.sourceSupplier?.toLowerCase() === target.name.toLowerCase()
+    );
+    if (refReceipts.length > 0) {
+      const msg = `Pemasok "${target.name}" tidak dapat dihapus karena memiliki riwayat ${refReceipts.length} transaksi penerimaan barang.`;
+      showToast('error', 'Hapus Ditolak', msg);
+      return { success: false, message: msg };
+    }
+
+    try {
+      await deleteDoc(doc(db, 'suppliers', id));
+      await logAudit('SUPPLIER_DELETED', 'Master Data', `Menghapus pemasok: ${target.name}`);
+      showToast('success', 'Pemasok Dihapus', `Data pemasok ${target.name} berhasil dihapus.`);
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Firestore Error: deleteSupplier]', err);
+      showToast('error', 'Gagal Menghapus Pemasok', err.message);
+      return { success: false, message: err.message };
+    }
+  };
+
+  // ----------------------------------------------------
   // GOODS RECEIPT (IN) (Cloud Firestore Authoritative)
   // ----------------------------------------------------
   const addGoodsReceipt = async (data: {
@@ -1381,10 +1680,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // ----------------------------------------------------
-  // GOODS ISSUE (OUT)
+  // GOODS ISSUE (OUT) (Cloud Firestore Authoritative)
   // ----------------------------------------------------
-  const createGoodsIssue = (data: {
+  const createGoodsIssue = async (data: {
     requestingUnit: string;
+    requesterUnitId?: string;
     destination: string;
     materialId?: string;
     itemId?: string;
@@ -1392,7 +1692,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     requestedQuantity: number;
     purpose: string;
     notes?: string;
-  }): boolean => {
+  }): Promise<boolean> => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -1422,15 +1722,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
+    // Resolve requesting unit snapshot
+    let resolvedReqUnitId = data.requesterUnitId;
+    let resolvedReqUnitName = data.requestingUnit;
+    if (!resolvedReqUnitId && resolvedReqUnitName) {
+      const match = requestingUnits.find(
+        (u) => u.name.toLowerCase() === resolvedReqUnitName.toLowerCase() || u.code.toLowerCase() === resolvedReqUnitName.toLowerCase()
+      );
+      if (match) {
+        resolvedReqUnitId = match.id;
+        resolvedReqUnitName = match.name;
+      }
+    }
+
     const location = locations.find((l) => l.id === data.locationId);
     const nextNumber = 'GI-2026-' + (800 + goodsIssues.length + 1);
     const now = getJakartaTimestamp();
+    const issueId = 'gi-' + Date.now();
+    const approvalId = 'app-' + Date.now();
 
     const newIssue: GoodsIssue = {
-      id: 'gi-' + Date.now(),
+      id: issueId,
       issueNumber: nextNumber,
       requestDate: now.split(' ')[0],
-      requestingUnit: data.requestingUnit,
+      requestingUnit: resolvedReqUnitName,
+      requesterUnitId: resolvedReqUnitId,
       destination: data.destination,
       itemId: material.id,
       itemCode: material.materialCode,
@@ -1451,11 +1767,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const newApproval: ApprovalRequest = {
-      id: 'app-' + Date.now(),
+      id: approvalId,
       type: 'BARANG_KELUAR',
       referenceId: newIssue.id,
       referenceNumber: nextNumber,
-      title: `Pengeluaran ${material.materialName} (${data.requestedQuantity} ${material.unit})`,
+      title: `Pengeluaran ${material.materialName} (${data.requestedQuantity} ${material.unit}) - ${resolvedReqUnitName}`,
       requestingUser: currentUser!.fullName,
       requestingEmployeeId: currentUser!.employeeId,
       location: location ? location.name : 'Gudang',
@@ -1471,15 +1787,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'PENDING',
     };
 
-    setGoodsIssues((prev) => [newIssue, ...prev]);
-    setApprovals((prev) => [newApproval, ...prev]);
-
-    logAudit('ISSUE_REQUEST_CREATED', 'Barang Keluar', `Permintaan pengeluaran ${data.requestedQuantity} ${material.unit} ${material.materialName} (${nextNumber}) diteruskan ke Approval Center.`);
-    showToast('success', 'Permintaan Terkirim', `Nomor Dokumen: ${nextNumber}. Menunggu otorisasi Administrator.`);
-    return true;
+    try {
+      await setDoc(doc(db, 'goodsIssues', issueId), newIssue);
+      await setDoc(doc(db, 'approvals', approvalId), newApproval);
+      await logAudit(
+        'ISSUE_REQUEST_CREATED',
+        'Barang Keluar',
+        `Permintaan pengeluaran ${data.requestedQuantity} ${material.unit} ${material.materialName} (${nextNumber}) untuk ${resolvedReqUnitName} diteruskan ke Approval Center.`
+      );
+      showToast('success', 'Permintaan Terkirim', `Nomor Dokumen: ${nextNumber}. Menunggu otorisasi Administrator.`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: createGoodsIssue]', err);
+      showToast('error', 'Gagal Mengirim Permintaan', err.message || 'Kesalahan koneksi database.');
+      return false;
+    }
   };
 
-  const approveGoodsIssue = (issueId: string, approvedQty: number): boolean => {
+  const approveGoodsIssue = async (issueId: string, approvedQty: number): Promise<boolean> => {
     const perm = can('APPROVE_TRANSACTIONS');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Admin yang dapat mengotorisasi pengeluaran.');
@@ -1500,36 +1825,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const now = getJakartaTimestamp();
 
-    // Deduct inventory atomically
-    setInventory((prev) =>
-      prev.map((b) => {
-        if (b.materialId === issue.itemId && b.locationId === issue.locationId) {
-          const newOut = b.qtyOut + approvedQty;
-          return {
-            ...b,
-            qtyOut: newOut,
-            availableStock: b.openingStock + b.qtyIn - newOut,
-            lastTransactionDate: now.split(' ')[0],
-          };
-        }
-        return b;
-      })
-    );
+    try {
+      // 1. Authoritative write to goodsIssues
+      await updateDoc(doc(db, 'goodsIssues', issueId), {
+        status: 'APPROVED',
+        approvedQuantity: approvedQty,
+        processedBy: currentUser!.fullName,
+        approvedAt: now,
+      });
 
-    setGoodsIssues((prev) =>
-      prev.map((gi) => (gi.id === issueId ? { ...gi, status: 'APPROVED', approvedQuantity: approvedQty, processedBy: currentUser!.fullName, approvedAt: now } : gi))
-    );
+      // 2. Authoritative update of approval request
+      const app = approvals.find((a) => a.referenceId === issueId && a.type === 'BARANG_KELUAR');
+      if (app) {
+        await updateDoc(doc(db, 'approvals', app.id), {
+          status: 'APPROVED',
+          actionBy: currentUser!.fullName,
+          actionDate: now,
+        });
+      }
 
-    setApprovals((prev) =>
-      prev.map((app) => (app.referenceId === issueId && app.type === 'BARANG_KELUAR' ? { ...app, status: 'APPROVED', actionBy: currentUser!.fullName, actionDate: now } : app))
-    );
+      // 3. Deduct inventory balance in Firestore
+      const newOut = balance.qtyOut + approvedQty;
+      const newAvailable = balance.openingStock + balance.qtyIn - newOut;
+      await updateDoc(doc(db, 'inventory', balance.id), {
+        qtyOut: newOut,
+        availableStock: newAvailable,
+        lastTransactionDate: now.split(' ')[0],
+      });
 
-    logAudit('ISSUE_APPROVED', 'Approval Center', `Menyetujui pengeluaran ${approvedQty} ${issue.unit} ${issue.itemName} (${issue.issueNumber})`);
-    showToast('success', 'Pengeluaran Disetujui', `Dokumen ${issue.issueNumber} disetujui. Saldo terpotong.`);
-    return true;
+      await logAudit(
+        'ISSUE_APPROVED',
+        'Approval Center',
+        `Menyetujui pengeluaran ${approvedQty} ${issue.unit} ${issue.itemName} (${issue.issueNumber}) untuk ${issue.requestingUnit}`
+      );
+      showToast('success', 'Pengeluaran Disetujui', `Dokumen ${issue.issueNumber} disetujui. Saldo terpotong.`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: approveGoodsIssue]', err);
+      showToast('error', 'Gagal Menyetujui Pengeluaran', err.message);
+      return false;
+    }
   };
 
-  const rejectGoodsIssue = (issueId: string, reason: string): boolean => {
+  const rejectGoodsIssue = async (issueId: string, reason: string): Promise<boolean> => {
     const perm = can('APPROVE_TRANSACTIONS');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -1537,30 +1875,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const now = getJakartaTimestamp();
-    setGoodsIssues((prev) =>
-      prev.map((gi) => (gi.id === issueId ? { ...gi, status: 'REJECTED', rejectionReason: reason, processedBy: currentUser!.fullName } : gi))
-    );
+    try {
+      await updateDoc(doc(db, 'goodsIssues', issueId), {
+        status: 'REJECTED',
+        rejectionReason: reason,
+        processedBy: currentUser!.fullName,
+      });
 
-    setApprovals((prev) =>
-      prev.map((app) => (app.referenceId === issueId && app.type === 'BARANG_KELUAR' ? { ...app, status: 'REJECTED', rejectionReason: reason, actionBy: currentUser!.fullName, actionDate: now } : app))
-    );
+      const app = approvals.find((a) => a.referenceId === issueId && a.type === 'BARANG_KELUAR');
+      if (app) {
+        await updateDoc(doc(db, 'approvals', app.id), {
+          status: 'REJECTED',
+          rejectionReason: reason,
+          actionBy: currentUser!.fullName,
+          actionDate: now,
+        });
+      }
 
-    logAudit('ISSUE_REJECTED', 'Approval Center', `Menolak pengeluaran ID: ${issueId}. Alasan: ${reason}`);
-    showToast('warning', 'Pengeluaran Ditolak', `Permintaan pengeluaran ditolak.`);
-    return true;
+      await logAudit('ISSUE_REJECTED', 'Approval Center', `Menolak pengeluaran ID: ${issueId}. Alasan: ${reason}`);
+      showToast('warning', 'Pengeluaran Ditolak', `Permintaan pengeluaran ditolak.`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: rejectGoodsIssue]', err);
+      showToast('error', 'Gagal Menolak Pengeluaran', err.message);
+      return false;
+    }
   };
 
   // ----------------------------------------------------
-  // STOCK TRANSFER
+  // STOCK TRANSFER (Cloud Firestore Authoritative)
   // ----------------------------------------------------
-  const createStockTransfer = (data: {
+  const createStockTransfer = async (data: {
     originLocationId: string;
     destinationLocationId: string;
     materialId?: string;
     itemId?: string;
     quantity: number;
     notes?: string;
-  }): boolean => {
+    requestingUnit?: string;
+    requesterUnitId?: string;
+  }): Promise<boolean> => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -1592,25 +1946,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const destLoc = locations.find((l) => l.id === data.destinationLocationId);
     const nextNumber = 'TR-2026-' + (200 + stockTransfers.length + 1);
     const now = getJakartaTimestamp();
-
-    // Deduct stock from origin location (In-Transit)
-    setInventory((prev) =>
-      prev.map((b) => {
-        if (b.materialId === material.id && b.locationId === data.originLocationId) {
-          const newOut = b.qtyOut + data.quantity;
-          return {
-            ...b,
-            qtyOut: newOut,
-            availableStock: b.openingStock + b.qtyIn - newOut,
-            lastTransactionDate: now.split(' ')[0],
-          };
-        }
-        return b;
-      })
-    );
+    const transferId = 'tr-' + Date.now();
 
     const newTransfer: StockTransfer = {
-      id: 'tr-' + Date.now(),
+      id: transferId,
       transferNumber: nextNumber,
       requestDate: now.split(' ')[0],
       originLocationId: data.originLocationId,
@@ -1624,6 +1963,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       quantity: data.quantity,
       unit: material.unit,
       requestingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`,
+      requestingUnit: data.requestingUnit,
+      requesterUnitId: data.requesterUnitId,
       sendingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`,
       receivingUser: null,
       status: 'IN_TRANSIT',
@@ -1632,13 +1973,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dispatchedAt: now,
     };
 
-    setStockTransfers((prev) => [newTransfer, ...prev]);
-    logAudit('TRANSFER_CREATED', 'Transfer Stok', `Membuat transfer ${data.quantity} ${material.unit} ${material.materialName} (${nextNumber}) dari ${newTransfer.originLocationName} ke ${newTransfer.destinationLocationName}`);
-    showToast('success', 'Transfer Diberangkatkan', `Nomor Transfer: ${nextNumber}. Status: In-Transit.`);
-    return true;
+    try {
+      // 1. Authoritative write of stock transfer
+      await setDoc(doc(db, 'stockTransfers', transferId), newTransfer);
+
+      // 2. Deduct stock from origin location (In-Transit)
+      const newOut = originBalance.qtyOut + data.quantity;
+      const newAvailable = originBalance.openingStock + originBalance.qtyIn - newOut;
+      await updateDoc(doc(db, 'inventory', originBalance.id), {
+        qtyOut: newOut,
+        availableStock: newAvailable,
+        lastTransactionDate: now.split(' ')[0],
+      });
+
+      await logAudit(
+        'TRANSFER_CREATED',
+        'Transfer Stok',
+        `Membuat transfer ${data.quantity} ${material.unit} ${material.materialName} (${nextNumber}) dari ${newTransfer.originLocationName} ke ${newTransfer.destinationLocationName}`
+      );
+      showToast('success', 'Transfer Diberangkatkan', `Nomor Transfer: ${nextNumber}. Status: In-Transit.`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: createStockTransfer]', err);
+      showToast('error', 'Gagal Membuat Transfer Stok', err.message);
+      return false;
+    }
   };
 
-  const receiveStockTransfer = (transferId: string): boolean => {
+  const receiveStockTransfer = async (transferId: string): Promise<boolean> => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -1653,29 +2015,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const now = getJakartaTimestamp();
 
-    // Increase stock at destination location
-    setInventory((prev) => {
-      const existing = prev.find(
+    try {
+      // 1. Mark transfer completed
+      await updateDoc(doc(db, 'stockTransfers', transferId), {
+        status: 'COMPLETED',
+        receivingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`,
+        receivedAt: now,
+      });
+
+      // 2. Increase stock at destination location
+      const existing = inventory.find(
         (b) => b.materialId === transfer.itemId && b.locationId === transfer.destinationLocationId
       );
 
       if (existing) {
-        return prev.map((b) => {
-          if (b.id === existing.id) {
-            const newIn = b.qtyIn + transfer.quantity;
-            return {
-              ...b,
-              qtyIn: newIn,
-              availableStock: b.openingStock + newIn - b.qtyOut,
-              lastTransactionDate: now.split(' ')[0],
-            };
-          }
-          return b;
+        const newIn = existing.qtyIn + transfer.quantity;
+        const newAvailable = existing.openingStock + newIn - existing.qtyOut;
+        await updateDoc(doc(db, 'inventory', existing.id), {
+          qtyIn: newIn,
+          availableStock: newAvailable,
+          lastTransactionDate: now.split(' ')[0],
         });
       } else {
         const material = materials.find((m) => m.id === transfer.itemId);
+        const balId = `bal-${transfer.itemId}-${transfer.destinationLocationId}`;
         const newBal: InventoryBalance = {
-          id: 'bal-' + Date.now(),
+          id: balId,
           materialId: transfer.itemId,
           materialCode: transfer.itemCode,
           materialName: transfer.itemName,
@@ -1694,30 +2059,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           lastTransactionDate: now.split(' ')[0],
           unitCost: material?.unitCost,
         };
-        return [newBal, ...prev];
+        await setDoc(doc(db, 'inventory', balId), newBal);
       }
-    });
 
-    setStockTransfers((prev) =>
-      prev.map((t) => (t.id === transferId ? { ...t, status: 'COMPLETED', receivingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`, receivedAt: now } : t))
-    );
-
-    logAudit('TRANSFER_RECEIVED', 'Transfer Stok', `Konfirmasi terima transfer ${transfer.transferNumber} di ${transfer.destinationLocationName}`);
-    showToast('success', 'Transfer Selesai', `Stok barang telah ditambahkan ke ${transfer.destinationLocationName}.`);
-    return true;
+      await logAudit(
+        'TRANSFER_RECEIVED',
+        'Transfer Stok',
+        `Konfirmasi terima transfer ${transfer.transferNumber} di ${transfer.destinationLocationName}`
+      );
+      showToast('success', 'Transfer Selesai', `Stok barang telah ditambahkan ke ${transfer.destinationLocationName}.`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: receiveStockTransfer]', err);
+      showToast('error', 'Gagal Mengonfirmasi Penerimaan Transfer', err.message);
+      return false;
+    }
   };
 
   // ----------------------------------------------------
-  // STOCK OPNAME
+  // STOCK OPNAME (Cloud Firestore Authoritative)
   // ----------------------------------------------------
-  const createStockOpname = (data: {
+  const createStockOpname = async (data: {
     locationId: string;
     materialId?: string;
     itemId?: string;
     physicalQuantity: number;
     varianceReason: string;
     notes?: string;
-  }): boolean => {
+  }): Promise<boolean> => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -1737,9 +2106,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const nextNumber = 'SO-2026-' + (40 + stockOpnames.length + 1);
     const now = getJakartaTimestamp();
+    const opnameId = 'so-' + Date.now();
+    const approvalId = 'app-' + Date.now();
 
     const newOpname: StockOpname = {
-      id: 'so-' + Date.now(),
+      id: opnameId,
       opnameNumber: nextNumber,
       opnameDate: now.split(' ')[0],
       locationId: data.locationId,
@@ -1759,43 +2130,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: now,
     };
 
-    if (requiresApproval) {
-      const newApproval: ApprovalRequest = {
-        id: 'app-' + Date.now(),
-        type: 'STOCK_OPNAME_ADJUSTMENT',
-        referenceId: newOpname.id,
-        referenceNumber: nextNumber,
-        title: `Penyesuaian Opname ${material.materialName} (${variance > 0 ? '+' : ''}${variance} ${material.unit})`,
-        requestingUser: currentUser!.fullName,
-        requestingEmployeeId: currentUser!.employeeId,
-        location: newOpname.locationName,
-        submissionDate: now,
-        details: {
-          itemCode: material.materialCode,
-          itemName: material.materialName,
-          quantity: Math.abs(variance),
-          unit: material.unit,
-          reasonOrPurpose: data.varianceReason,
-          systemQuantity: systemQty,
-          physicalQuantity: data.physicalQuantity,
-          variance,
-        },
-        status: 'PENDING',
-      };
-      setApprovals((prev) => [newApproval, ...prev]);
-    }
+    try {
+      await setDoc(doc(db, 'stockOpnames', opnameId), newOpname);
 
-    setStockOpnames((prev) => [newOpname, ...prev]);
-    logAudit('OPNAME_RECORDED', 'Stock Opname', `Pencatatan opname ${nextNumber}: Sistem ${systemQty}, Fisik ${data.physicalQuantity}, Selisih ${variance} ${material.unit}.`);
-    showToast(
-      requiresApproval ? 'warning' : 'success',
-      requiresApproval ? 'Opname Ada Selisih' : 'Opname Sesuai',
-      requiresApproval ? `Ditemukan selisih ${variance} ${material.unit}. Diteruskan ke Approval Center.` : 'Fisik dan sistem cocok.'
-    );
-    return true;
+      if (requiresApproval) {
+        const newApproval: ApprovalRequest = {
+          id: approvalId,
+          type: 'STOCK_OPNAME_ADJUSTMENT',
+          referenceId: newOpname.id,
+          referenceNumber: nextNumber,
+          title: `Penyesuaian Opname ${material.materialName} (${variance > 0 ? '+' : ''}${variance} ${material.unit})`,
+          requestingUser: currentUser!.fullName,
+          requestingEmployeeId: currentUser!.employeeId,
+          location: newOpname.locationName,
+          submissionDate: now,
+          details: {
+            itemCode: material.materialCode,
+            itemName: material.materialName,
+            quantity: Math.abs(variance),
+            unit: material.unit,
+            reasonOrPurpose: data.varianceReason,
+            systemQuantity: systemQty,
+            physicalQuantity: data.physicalQuantity,
+            variance,
+          },
+          status: 'PENDING',
+        };
+        await setDoc(doc(db, 'approvals', approvalId), newApproval);
+      } else if (balance) {
+        // If variance is 0, update lastTransactionDate
+        await updateDoc(doc(db, 'inventory', balance.id), {
+          lastTransactionDate: now.split(' ')[0],
+        });
+      }
+
+      await logAudit(
+        'OPNAME_RECORDED',
+        'Stock Opname',
+        `Pencatatan opname ${nextNumber}: Sistem ${systemQty}, Fisik ${data.physicalQuantity}, Selisih ${variance} ${material.unit}.`
+      );
+      showToast(
+        requiresApproval ? 'warning' : 'success',
+        requiresApproval ? 'Opname Ada Selisih' : 'Opname Sesuai',
+        requiresApproval ? `Ditemukan selisih ${variance} ${material.unit}. Diteruskan ke Approval Center.` : 'Fisik dan sistem cocok.'
+      );
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: createStockOpname]', err);
+      showToast('error', 'Gagal Menyimpan Stock Opname', err.message);
+      return false;
+    }
   };
 
-  const approveOpnameAdjustment = (opnameId: string): boolean => {
+  const approveOpnameAdjustment = async (opnameId: string): Promise<boolean> => {
     const perm = can('ADJUST_STOCK');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Admin yang dapat memposting adjustment.');
@@ -1807,34 +2194,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const now = getJakartaTimestamp();
 
-    // Adjust system stock to physical count
-    setInventory((prev) =>
-      prev.map((b) => {
-        if (b.materialId === opname.itemId && b.locationId === opname.locationId) {
-          return {
-            ...b,
-            availableStock: opname.physicalQuantity,
-            lastTransactionDate: now.split(' ')[0],
-          };
-        }
-        return b;
-      })
-    );
+    try {
+      // 1. Authoritative update of stockOpnames
+      await updateDoc(doc(db, 'stockOpnames', opnameId), {
+        verificationStatus: 'ADJUSTED',
+        verifiedBy: `${currentUser!.fullName} (${currentUser!.employeeId})`,
+        adjustedAt: now,
+      });
 
-    setStockOpnames((prev) =>
-      prev.map((o) => (o.id === opnameId ? { ...o, verificationStatus: 'ADJUSTED', verifiedBy: `${currentUser!.fullName} (${currentUser!.employeeId})`, adjustedAt: now } : o))
-    );
+      // 2. Authoritative update of approvals
+      const app = approvals.find((a) => a.referenceId === opnameId && a.type === 'STOCK_OPNAME_ADJUSTMENT');
+      if (app) {
+        await updateDoc(doc(db, 'approvals', app.id), {
+          status: 'APPROVED',
+          actionBy: currentUser!.fullName,
+          actionDate: now,
+        });
+      }
 
-    setApprovals((prev) =>
-      prev.map((app) => (app.referenceId === opnameId && app.type === 'STOCK_OPNAME_ADJUSTMENT' ? { ...app, status: 'APPROVED', actionBy: currentUser!.fullName, actionDate: now } : app))
-    );
+      // 3. Authoritative adjustment of inventory balance
+      const balance = inventory.find(
+        (b) => b.materialId === opname.itemId && b.locationId === opname.locationId
+      );
+      if (balance) {
+        await updateDoc(doc(db, 'inventory', balance.id), {
+          availableStock: opname.physicalQuantity,
+          lastTransactionDate: now.split(' ')[0],
+        });
+      }
 
-    logAudit('OPNAME_ADJUSTMENT_POSTED', 'Approval Center', `Menyetujui adjustment opname ${opname.opnameNumber}. Saldo baru: ${opname.physicalQuantity} ${opname.unit}.`);
-    showToast('success', 'Penyesuaian Berhasil', `Saldo sistem telah disesuaikan dengan fisik (${opname.physicalQuantity} ${opname.unit}).`);
-    return true;
+      await logAudit(
+        'OPNAME_ADJUSTMENT_POSTED',
+        'Approval Center',
+        `Menyetujui adjustment opname ${opname.opnameNumber}. Saldo baru: ${opname.physicalQuantity} ${opname.unit}.`
+      );
+      showToast('success', 'Penyesuaian Berhasil', `Saldo sistem telah disesuaikan dengan fisik (${opname.physicalQuantity} ${opname.unit}).`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: approveOpnameAdjustment]', err);
+      showToast('error', 'Gagal Memproses Adjustment Opname', err.message);
+      return false;
+    }
   };
 
-  const rejectOpnameAdjustment = (opnameId: string, reason: string): boolean => {
+  const rejectOpnameAdjustment = async (opnameId: string, reason: string): Promise<boolean> => {
     const perm = can('ADJUST_STOCK');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -1845,17 +2248,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!opname) return false;
 
     const now = getJakartaTimestamp();
-    setStockOpnames((prev) =>
-      prev.map((o) => (o.id === opnameId ? { ...o, verificationStatus: 'REJECTED', notes: (o.notes ? o.notes + ' | ' : '') + `Ditolak Admin: ${reason}` } : o))
-    );
+    try {
+      await updateDoc(doc(db, 'stockOpnames', opnameId), {
+        verificationStatus: 'REJECTED',
+        notes: (opname.notes ? opname.notes + ' | ' : '') + `Ditolak Admin: ${reason}`,
+      });
 
-    setApprovals((prev) =>
-      prev.map((app) => (app.referenceId === opnameId && app.type === 'STOCK_OPNAME_ADJUSTMENT' ? { ...app, status: 'REJECTED', rejectionReason: reason, actionBy: currentUser!.fullName, actionDate: now } : app))
-    );
+      const app = approvals.find((a) => a.referenceId === opnameId && a.type === 'STOCK_OPNAME_ADJUSTMENT');
+      if (app) {
+        await updateDoc(doc(db, 'approvals', app.id), {
+          status: 'REJECTED',
+          rejectionReason: reason,
+          actionBy: currentUser!.fullName,
+          actionDate: now,
+        });
+      }
 
-    logAudit('OPNAME_ADJUSTMENT_REJECTED', 'Approval Center', `Menolak adjustment opname ${opname.opnameNumber}. Alasan: ${reason}`);
-    showToast('warning', 'Adjustment Ditolak', 'Penolakan adjustment opname tercatat.');
-    return true;
+      await logAudit('OPNAME_ADJUSTMENT_REJECTED', 'Approval Center', `Menolak adjustment opname ${opname.opnameNumber}. Alasan: ${reason}`);
+      showToast('warning', 'Adjustment Ditolak', 'Penolakan adjustment opname tercatat.');
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: rejectOpnameAdjustment]', err);
+      showToast('error', 'Gagal Menolak Adjustment Opname', err.message);
+      return false;
+    }
   };
 
   // ----------------------------------------------------
@@ -2793,7 +3209,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         approvals,
         auditLogs,
         requestingUnits,
+        activeRequestingUnits,
+        addRequestingUnit,
+        updateRequestingUnit,
+        toggleRequestingUnitStatus,
+        deleteRequestingUnit,
         suppliers,
+        activeSuppliers,
+        saveSupplier,
+        deleteSupplier,
         settings,
         activeNav,
         setActiveNav,

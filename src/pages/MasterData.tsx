@@ -61,7 +61,19 @@ export const MasterData: React.FC = () => {
     saveUnit,
     toggleUnitStatus,
     requestingUnits,
+    activeRequestingUnits,
+    addRequestingUnit,
+    updateRequestingUnit,
+    toggleRequestingUnitStatus,
+    deleteRequestingUnit,
     suppliers,
+    activeSuppliers,
+    saveSupplier,
+    deleteSupplier,
+    goodsIssues,
+    stockTransfers,
+    supplyRequests,
+    goodsReceipts,
     settings,
     currentUser,
     can,
@@ -414,6 +426,362 @@ export const MasterData: React.FC = () => {
       exportToCsvFile(data, `Location_Master_${dateStr}.csv`);
     }
     showToast('success', 'Ekspor Berhasil', `${data.length} lokasi diekspor.`);
+  };
+
+  // ----------------------------------------------------
+  // UNIT PEMOHON (REQUESTING UNITS) LOGIC & STATE
+  // ----------------------------------------------------
+  const [reqSearchTerm, setReqSearchTerm] = useState('');
+  const [reqFilterStatus, setReqFilterStatus] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
+  const [reqUnitModalOpen, setReqUnitModalOpen] = useState(false);
+  const [editingReqUnitId, setEditingReqUnitId] = useState<string | null>(null);
+  const [reqCode, setReqCode] = useState('');
+  const [reqName, setReqName] = useState('');
+  const [reqDivision, setReqDivision] = useState('Divisi Operasi');
+  const [reqContactPerson, setReqContactPerson] = useState('');
+  const [reqDescription, setReqDescription] = useState('');
+  const [reqIsActive, setReqIsActive] = useState(true);
+  const [isSubmittingReq, setIsSubmittingReq] = useState(false);
+  const [viewReqUnitDetail, setViewReqUnitDetail] = useState<MasterRequestingUnit | null>(null);
+  const [reqUnitToDelete, setReqUnitToDelete] = useState<MasterRequestingUnit | null>(null);
+  const [reqDeleteBlockingReason, setReqDeleteBlockingReason] = useState<string | null>(null);
+  const [isDeletingReq, setIsDeletingReq] = useState(false);
+  const [reqDuplicateError, setReqDuplicateError] = useState('');
+
+  // Filtered Requesting Units
+  const filteredRequestingUnits = useMemo(() => {
+    return requestingUnits.filter((u) => {
+      const term = (reqSearchTerm || searchTerm).toLowerCase().trim();
+      const codeStr = (u.code || u.unitCode || '').toLowerCase();
+      const nameStr = (u.name || u.unitName || '').toLowerCase();
+      const divStr = (u.division || '').toLowerCase();
+      const picStr = (u.contactPerson || '').toLowerCase();
+      const descStr = (u.description || '').toLowerCase();
+
+      const matchSearch =
+        !term ||
+        codeStr.includes(term) ||
+        nameStr.includes(term) ||
+        divStr.includes(term) ||
+        picStr.includes(term) ||
+        descStr.includes(term);
+
+      const matchStatus =
+        reqFilterStatus === 'ALL' ||
+        (reqFilterStatus === 'ACTIVE' && u.isActive !== false) ||
+        (reqFilterStatus === 'INACTIVE' && u.isActive === false);
+
+      return matchSearch && matchStatus;
+    });
+  }, [requestingUnits, reqSearchTerm, searchTerm, reqFilterStatus]);
+
+  const handleOpenAddReqUnit = () => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat mendaftarkan Unit Pemohon.');
+      return;
+    }
+    setEditingReqUnitId(null);
+    setReqCode(`UP-${String(requestingUnits.length + 1).padStart(3, '0')}`);
+    setReqName('');
+    setReqDivision('Divisi Operasi');
+    setReqContactPerson('');
+    setReqDescription('');
+    setReqIsActive(true);
+    setReqDuplicateError('');
+    setReqUnitModalOpen(true);
+  };
+
+  const handleOpenEditReqUnit = (u: MasterRequestingUnit) => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat mengubah data Unit Pemohon.');
+      return;
+    }
+    setEditingReqUnitId(u.id);
+    setReqCode(u.code || u.unitCode || '');
+    setReqName(u.name || u.unitName || '');
+    setReqDivision(u.division || 'Divisi Operasi');
+    setReqContactPerson(u.contactPerson || '');
+    setReqDescription(u.description || '');
+    setReqIsActive(u.isActive !== false);
+    setReqDuplicateError('');
+    setReqUnitModalOpen(true);
+  };
+
+  const handleSubmitReqUnit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setReqDuplicateError('');
+
+    const cleanCode = reqCode.trim().toUpperCase();
+    const cleanName = reqName.trim();
+
+    if (!cleanCode) {
+      setReqDuplicateError('Kode Unit Pemohon wajib diisi.');
+      return;
+    }
+    if (!cleanName) {
+      setReqDuplicateError('Nama Unit Pemohon wajib diisi.');
+      return;
+    }
+
+    // Check duplicate code
+    const dupCode = requestingUnits.some(
+      (u) =>
+        u.id !== editingReqUnitId &&
+        ((u.code && u.code.toUpperCase() === cleanCode) ||
+          (u.unitCode && u.unitCode.toUpperCase() === cleanCode))
+    );
+    if (dupCode) {
+      setReqDuplicateError(`Kode Unit "${cleanCode}" sudah digunakan oleh unit lain.`);
+      return;
+    }
+
+    // Check duplicate name
+    const dupName = requestingUnits.some(
+      (u) =>
+        u.id !== editingReqUnitId &&
+        ((u.name && u.name.toLowerCase() === cleanName.toLowerCase()) ||
+          (u.unitName && u.unitName.toLowerCase() === cleanName.toLowerCase()))
+    );
+    if (dupName) {
+      setReqDuplicateError(`Nama Unit "${cleanName}" sudah terdaftar dalam sistem.`);
+      return;
+    }
+
+    setIsSubmittingReq(true);
+    try {
+      if (editingReqUnitId) {
+        const res = await updateRequestingUnit(editingReqUnitId, {
+          code: cleanCode,
+          unitCode: cleanCode,
+          name: cleanName,
+          unitName: cleanName,
+          division: reqDivision.trim() || 'Umum',
+          contactPerson: reqContactPerson.trim() || '-',
+          description: reqDescription.trim(),
+          isActive: reqIsActive,
+        });
+        if (res.success) {
+          setReqUnitModalOpen(false);
+        } else if (res.message) {
+          setReqDuplicateError(res.message);
+        }
+      } else {
+        const res = await addRequestingUnit({
+          code: cleanCode,
+          unitCode: cleanCode,
+          name: cleanName,
+          unitName: cleanName,
+          division: reqDivision.trim() || 'Umum',
+          contactPerson: reqContactPerson.trim() || '-',
+          description: reqDescription.trim(),
+          isActive: reqIsActive,
+        });
+        if (res.success) {
+          setReqUnitModalOpen(false);
+        } else if (res.message) {
+          setReqDuplicateError(res.message);
+        }
+      }
+    } finally {
+      setIsSubmittingReq(false);
+    }
+  };
+
+  const handleToggleReqStatus = async (u: MasterRequestingUnit) => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat mengubah status.');
+      return;
+    }
+    await toggleRequestingUnitStatus(u.id);
+  };
+
+  const handleOpenDeleteReqUnit = (u: MasterRequestingUnit) => {
+    if (!canManage || currentUser?.role !== 'ADMIN') {
+      showToast('error', 'Akses Ditolak', 'Hanya Administrator yang memiliki wewenang menghapus Unit Pemohon.');
+      return;
+    }
+
+    // Check operational references across Goods Issues, Stock Transfers, and Supply Requests
+    const giRefs = goodsIssues.filter(
+      (gi) =>
+        gi.requesterUnitId === u.id ||
+        (gi.requestingUnit && u.name && gi.requestingUnit.toLowerCase() === u.name.toLowerCase()) ||
+        (gi.requestingUnit && u.code && gi.requestingUnit.toLowerCase() === u.code.toLowerCase())
+    );
+    const stRefs = stockTransfers.filter(
+      (st) =>
+        st.requesterUnitId === u.id ||
+        (st.requestingUnit && u.name && st.requestingUnit.toLowerCase() === u.name.toLowerCase()) ||
+        (st.requestingUnit && u.code && st.requestingUnit.toLowerCase() === u.code.toLowerCase())
+    );
+    const srRefs = supplyRequests.filter(
+      (sr) =>
+        sr.requesterUnitId === u.id ||
+        (sr.requestingUnit && u.name && sr.requestingUnit.toLowerCase() === u.name.toLowerCase()) ||
+        (sr.requestingUnit && u.code && sr.requestingUnit.toLowerCase() === u.code.toLowerCase())
+    );
+
+    const totalRefs = giRefs.length + stRefs.length + srRefs.length;
+    if (totalRefs > 0) {
+      setReqDeleteBlockingReason(
+        `Unit Pemohon "${u.name}" (${u.code}) TIDAK DAPAT DIHAPUS karena tercatat dalam ${totalRefs} transaksi operasional: ` +
+          `${giRefs.length} Pengeluaran Barang, ${stRefs.length} Transfer Stok, dan ${srRefs.length} Permohonan Pasokan. ` +
+          `Untuk menjaga integritas riwayat logistik, Anda disarankan menonaktifkan status unit ini agar tidak dapat dipilih lagi pada transaksi baru.`
+      );
+    } else {
+      setReqDeleteBlockingReason(null);
+    }
+    setReqUnitToDelete(u);
+  };
+
+  const handleConfirmDeleteReqUnit = async () => {
+    if (!reqUnitToDelete || reqDeleteBlockingReason) return;
+    setIsDeletingReq(true);
+    try {
+      const res = await deleteRequestingUnit(reqUnitToDelete.id);
+      if (res.success) {
+        setReqUnitToDelete(null);
+      }
+    } finally {
+      setIsDeletingReq(false);
+    }
+  };
+
+  const handleExportReqUnitsQuick = (format: 'xlsx' | 'csv') => {
+    const data = filteredRequestingUnits.map((u) => ({
+      'Kode Unit': u.code || u.unitCode,
+      'Nama Unit Pemohon': u.name || u.unitName,
+      'Divisi Induk': u.division,
+      'Contact Person / PIC': u.contactPerson,
+      'Keterangan': u.description || '-',
+      'Status': u.isActive !== false ? 'Active' : 'Inactive',
+      'Dibuat Pada': u.createdAt || '-',
+      'Dibuat Oleh': u.createdBy || '-',
+      'Terakhir Diperbarui': u.updatedAt || '-',
+    }));
+    const dateStr = new Date().toISOString().slice(0, 10);
+    if (format === 'xlsx') {
+      exportToExcelFile(data, `Master_Unit_Pemohon_${dateStr}.xlsx`, 'Unit Pemohon');
+    } else {
+      exportToCsvFile(data, `Master_Unit_Pemohon_${dateStr}.csv`);
+    }
+    showToast('success', 'Ekspor Berhasil', `${data.length} unit pemohon diekspor.`);
+  };
+
+  // ----------------------------------------------------
+  // SUPPLIER MASTER LOGIC & STATE
+  // ----------------------------------------------------
+  const [supModalOpen, setSupModalOpen] = useState(false);
+  const [editingSupId, setEditingSupId] = useState<string | null>(null);
+  const [supCode, setSupCode] = useState('');
+  const [supName, setSupName] = useState('');
+  const [supContactPerson, setSupContactPerson] = useState('');
+  const [supPhone, setSupPhone] = useState('');
+  const [supEmail, setSupEmail] = useState('');
+  const [supAddress, setSupAddress] = useState('');
+  const [isSubmittingSup, setIsSubmittingSup] = useState(false);
+  const [supplierToDelete, setSupplierToDelete] = useState<MasterSupplier | null>(null);
+  const [supDeleteBlockingReason, setSupDeleteBlockingReason] = useState<string | null>(null);
+  const [isDeletingSup, setIsDeletingSup] = useState(false);
+
+  const filteredSuppliers = useMemo(() => {
+    return suppliers.filter((s) => {
+      const term = (searchTerm || '').toLowerCase().trim();
+      if (!term) return true;
+      return (
+        s.code.toLowerCase().includes(term) ||
+        s.name.toLowerCase().includes(term) ||
+        s.contactPerson.toLowerCase().includes(term) ||
+        s.address.toLowerCase().includes(term)
+      );
+    });
+  }, [suppliers, searchTerm]);
+
+  const handleOpenAddSupplier = () => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat menambah data pemasok.');
+      return;
+    }
+    setEditingSupId(null);
+    setSupCode(`SUP-${String(suppliers.length + 1).padStart(3, '0')}`);
+    setSupName('');
+    setSupContactPerson('');
+    setSupPhone('');
+    setSupEmail('');
+    setSupAddress('');
+    setSupModalOpen(true);
+  };
+
+  const handleOpenEditSupplier = (s: MasterSupplier) => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat mengubah data pemasok.');
+      return;
+    }
+    setEditingSupId(s.id);
+    setSupCode(s.code);
+    setSupName(s.name);
+    setSupContactPerson(s.contactPerson);
+    setSupPhone(s.phone);
+    setSupEmail(s.email);
+    setSupAddress(s.address);
+    setSupModalOpen(true);
+  };
+
+  const handleSubmitSupplier = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supName.trim()) {
+      showToast('error', 'Validasi Gagal', 'Nama pemasok wajib diisi.');
+      return;
+    }
+    setIsSubmittingSup(true);
+    try {
+      const success = await saveSupplier({
+        id: editingSupId || undefined,
+        code: supCode.trim().toUpperCase() || `SUP-${Date.now()}`,
+        name: supName.trim(),
+        contactPerson: supContactPerson.trim() || '-',
+        phone: supPhone.trim() || '-',
+        email: supEmail.trim() || '-',
+        address: supAddress.trim() || '-',
+        isActive: true,
+      });
+      if (success) {
+        setSupModalOpen(false);
+      }
+    } finally {
+      setIsSubmittingSup(false);
+    }
+  };
+
+  const handleOpenDeleteSupplier = (s: MasterSupplier) => {
+    if (!canManage || currentUser?.role !== 'ADMIN') {
+      showToast('error', 'Akses Ditolak', 'Hanya Administrator yang dapat menghapus data pemasok.');
+      return;
+    }
+    const refReceipts = goodsReceipts.filter(
+      (gr) => gr.sourceSupplier?.toLowerCase() === s.name.toLowerCase()
+    );
+    if (refReceipts.length > 0) {
+      setSupDeleteBlockingReason(
+        `Pemasok "${s.name}" tidak dapat dihapus karena tercatat dalam ${refReceipts.length} transaksi penerimaan barang masuk.`
+      );
+    } else {
+      setSupDeleteBlockingReason(null);
+    }
+    setSupplierToDelete(s);
+  };
+
+  const handleConfirmDeleteSupplier = async () => {
+    if (!supplierToDelete || supDeleteBlockingReason) return;
+    setIsDeletingSup(true);
+    try {
+      const res = await deleteSupplier(supplierToDelete.id);
+      if (res.success) {
+        setSupplierToDelete(null);
+      }
+    } finally {
+      setIsDeletingSup(false);
+    }
   };
 
   return (
@@ -1046,45 +1414,311 @@ export const MasterData: React.FC = () => {
       {/* TAB 5: REQUESTING UNITS & TAB 6: SUPPLIERS */}
       {/* ------------------------------------------------------------------ */}
       {activeTab === 'REQUESTING_UNITS' && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[11px]">
-                <th className="py-3 px-4">Kode Unit</th>
-                <th className="py-3 px-4">Nama Unit Kerja</th>
-                <th className="py-3 px-4">Divisi Induk</th>
-                <th className="py-3 px-4">Contact Person / PIC</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {requestingUnits.map((u) => (
-                <tr key={u.id} className="hover:bg-slate-50">
-                  <td className="py-3 px-4 font-mono font-bold text-slate-800">{u.code}</td>
-                  <td className="py-3 px-4 font-bold text-slate-900">{u.name}</td>
-                  <td className="py-3 px-4 text-slate-600">{u.division}</td>
-                  <td className="py-3 px-4 text-slate-700">{u.contactPerson}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-4">
+          {/* Action & Filter Bar */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 flex-1 max-w-lg">
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Cari kode, nama unit kerja, divisi, PIC..."
+                    value={reqSearchTerm}
+                    onChange={(e) => setReqSearchTerm(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b]/30"
+                  />
+                </div>
+                <div>
+                  <select
+                    value={reqFilterStatus}
+                    onChange={(e) => setReqFilterStatus(e.target.value as any)}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white"
+                  >
+                    <option value="ALL">Semua Status (Aktif & Non-Aktif)</option>
+                    <option value="ACTIVE">Hanya Unit Aktif</option>
+                    <option value="INACTIVE">Hanya Unit Non-Aktif</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleExportReqUnitsQuick('xlsx')}
+                  className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold text-xs shadow-2xs flex items-center gap-1.5 transition"
+                  title="Ekspor data Unit Pemohon ke Excel"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>XLSX</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportReqUnitsQuick('csv')}
+                  className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold text-xs shadow-2xs flex items-center gap-1.5 transition"
+                  title="Ekspor data Unit Pemohon ke CSV"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-500" />
+                  <span>CSV</span>
+                </button>
+
+                {canManage && (
+                  <button
+                    type="button"
+                    onClick={handleOpenAddReqUnit}
+                    className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-2xs flex items-center gap-1.5 transition"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Tambah Unit Pemohon</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Metrics Ribbon */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2 border-t border-slate-100 text-xs">
+              <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+                <span className="text-[11px] text-slate-500 block">Total Unit Terdaftar</span>
+                <span className="text-base font-extrabold text-slate-900">{requestingUnits.length}</span>
+              </div>
+              <div className="p-2.5 bg-emerald-50/60 rounded-lg border border-emerald-100">
+                <span className="text-[11px] text-emerald-800 block">Unit Aktif (Siap Transaksi)</span>
+                <span className="text-base font-extrabold text-emerald-900">
+                  {requestingUnits.filter((u) => u.isActive !== false).length}
+                </span>
+              </div>
+              <div className="p-2.5 bg-slate-100/70 rounded-lg border border-slate-200">
+                <span className="text-[11px] text-slate-600 block">Unit Non-Aktif (Arsip)</span>
+                <span className="text-base font-extrabold text-slate-700">
+                  {requestingUnits.filter((u) => u.isActive === false).length}
+                </span>
+              </div>
+              <div className="p-2.5 bg-indigo-50/60 rounded-lg border border-indigo-100">
+                <span className="text-[11px] text-indigo-800 block">Total Transaksi Terkait</span>
+                <span className="text-base font-extrabold text-indigo-900">
+                  {goodsIssues.length + stockTransfers.length + supplyRequests.length}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[11px]">
+                    <th className="py-3 px-4">Kode Unit</th>
+                    <th className="py-3 px-4">Nama Unit Kerja Pemohon</th>
+                    <th className="py-3 px-4">Divisi Induk</th>
+                    <th className="py-3 px-4">Contact Person / PIC</th>
+                    <th className="py-3 px-4">Keterangan</th>
+                    <th className="py-3 px-4 text-center">Status</th>
+                    <th className="py-3 px-4 text-center">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredRequestingUnits.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-12 text-center text-slate-400">
+                        {requestingUnits.length === 0 ? (
+                          <div className="space-y-2">
+                            <p className="font-semibold text-slate-600">Belum ada Unit Pemohon yang terdaftar.</p>
+                            <p className="text-[11px] text-slate-400">
+                              Klik tombol "Tambah Unit Pemohon" di atas untuk mendaftarkan unit kerja pertama.
+                            </p>
+                          </div>
+                        ) : (
+                          'Tidak ada Unit Pemohon yang cocok dengan kata kunci atau filter pencarian.'
+                        )}
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredRequestingUnits.map((u) => {
+                      const isActive = u.isActive !== false;
+                      const hasRef =
+                        goodsIssues.some(
+                          (gi) =>
+                            gi.requesterUnitId === u.id ||
+                            (gi.requestingUnit && u.name && gi.requestingUnit.toLowerCase() === u.name.toLowerCase())
+                        ) ||
+                        stockTransfers.some(
+                          (st) =>
+                            st.requesterUnitId === u.id ||
+                            (st.requestingUnit && u.name && st.requestingUnit.toLowerCase() === u.name.toLowerCase())
+                        ) ||
+                        supplyRequests.some(
+                          (sr) =>
+                            sr.requesterUnitId === u.id ||
+                            (sr.requestingUnit && u.name && sr.requestingUnit.toLowerCase() === u.name.toLowerCase())
+                        );
+
+                      return (
+                        <tr key={u.id} className="hover:bg-slate-50 transition">
+                          <td className="py-3 px-4 font-mono font-bold text-slate-900">
+                            <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200">
+                              {u.code || u.unitCode}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="font-bold text-slate-900 text-xs">{u.name || u.unitName}</div>
+                            {u.createdAt && (
+                              <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                Terdaftar: {u.createdAt.split(' ')[0]}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 text-slate-700 font-medium">{u.division}</td>
+                          <td className="py-3 px-4 text-slate-700">
+                            <span className="font-semibold">{u.contactPerson || '-'}</span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-500 max-w-[200px] truncate" title={u.description || ''}>
+                            {u.description || '-'}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            {isActive ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Aktif
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-slate-100 text-slate-600 border border-slate-200">
+                                Non-Aktif
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              {/* View detail button */}
+                              <button
+                                type="button"
+                                onClick={() => setViewReqUnitDetail(u)}
+                                className="p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100 transition"
+                                title="Lihat detail Unit Pemohon"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                              </button>
+
+                              {canManage && (
+                                <>
+                                  {/* Edit button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditReqUnit(u)}
+                                    className="p-1 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-100 transition"
+                                    title="Ubah data Unit Pemohon"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+
+                                  {/* Toggle status button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleReqStatus(u)}
+                                    className={`p-1 rounded transition ${
+                                      isActive
+                                        ? 'text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50'
+                                        : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
+                                    }`}
+                                    title={isActive ? 'Nonaktifkan Unit' : 'Aktifkan Unit'}
+                                  >
+                                    <Power className="w-3.5 h-3.5" />
+                                  </button>
+
+                                  {/* Delete button (with reference protection) */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenDeleteReqUnit(u)}
+                                    className={`p-1 rounded transition ${
+                                      hasRef
+                                        ? 'text-slate-300 hover:text-amber-700 hover:bg-amber-50'
+                                        : 'text-slate-400 hover:text-rose-700 hover:bg-rose-50'
+                                    }`}
+                                    title={
+                                      hasRef
+                                        ? 'Unit memiliki transaksi terkait (Penghapusan diproteksi)'
+                                        : 'Hapus Unit Pemohon'
+                                    }
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
       {activeTab === 'SUPPLIERS' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {suppliers.map((s) => (
-            <div key={s.id} className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-2">
-              <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
-                {s.code}
-              </span>
-              <h3 className="font-bold text-slate-900 text-sm">{s.name}</h3>
-              <p className="text-xs text-slate-500">{s.address}</p>
-              <div className="pt-2 border-t border-slate-100 text-[11px] text-slate-600">
-                <div>PIC: <strong>{s.contactPerson}</strong></div>
-                <div>{s.phone} • {s.email}</div>
+        <div className="space-y-4">
+          <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
+            <span className="text-xs text-slate-600 font-semibold">
+              Katalog Pemasok Resmi & Rekanan Pengadaan Barang ({suppliers.length} Terdaftar)
+            </span>
+            {canManage && (
+              <button
+                type="button"
+                onClick={handleOpenAddSupplier}
+                className="px-3.5 py-2 rounded-xl bg-[#064e3b] text-white font-bold text-xs shadow-2xs flex items-center gap-1.5 hover:bg-[#065f46] transition"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Tambah Pemasok</span>
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredSuppliers.map((s) => (
+              <div
+                key={s.id}
+                className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-2 hover:border-emerald-300 transition"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
+                    {s.code}
+                  </span>
+                  {canManage && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditSupplier(s)}
+                        className="p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100"
+                        title="Ubah data pemasok"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenDeleteSupplier(s)}
+                        className="p-1 text-slate-400 hover:text-rose-600 rounded hover:bg-rose-50"
+                        title="Hapus pemasok"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <h3 className="font-bold text-slate-900 text-sm">{s.name}</h3>
+                <p className="text-xs text-slate-500">{s.address}</p>
+                <div className="pt-2 border-t border-slate-100 text-[11px] text-slate-600 space-y-0.5">
+                  <div>
+                    PIC: <strong>{s.contactPerson}</strong>
+                  </div>
+                  <div>
+                    {s.phone} • {s.email}
+                  </div>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
@@ -1745,6 +2379,569 @@ export const MasterData: React.FC = () => {
                   <span>Konfirmasi Hapus</span>
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: ADD / EDIT UNIT PEMOHON */}
+      {/* ------------------------------------------------------------------ */}
+      {reqUnitModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in">
+          <form
+            onSubmit={handleSubmitReqUnit}
+            className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 my-auto flex flex-col space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-100 text-emerald-800">
+                  <Users className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">
+                    {editingReqUnitId ? 'Ubah Data Unit Pemohon' : 'Tambah Unit Pemohon Baru'}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Master entitas divisi / unit pemohon permohonan logistik PT IAS Support
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReqUnitModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {reqDuplicateError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2.5 text-xs text-rose-800 animate-in fade-in">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="font-semibold">{reqDuplicateError}</div>
+              </div>
+            )}
+
+            <div className="space-y-3.5 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-700 font-bold block mb-1">Kode Unit *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Contoh: UP-OPS-01"
+                    value={reqCode}
+                    onChange={(e) => {
+                      setReqCode(e.target.value.toUpperCase());
+                      setReqDuplicateError('');
+                    }}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono font-bold uppercase focus:ring-2 focus:ring-[#064e3b]/30 focus:outline-none"
+                  />
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">Kode unik pengenal unit kerja</span>
+                </div>
+
+                <div>
+                  <label className="text-slate-700 font-bold block mb-1">Divisi Induk *</label>
+                  <select
+                    value={reqDivision}
+                    onChange={(e) => setReqDivision(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-[#064e3b]/30 focus:outline-none"
+                  >
+                    <option value="Divisi Operasi">Divisi Operasi (Hub & Terminal)</option>
+                    <option value="Divisi Kebersihan & Fasilitas">Divisi Kebersihan & Fasilitas</option>
+                    <option value="Divisi Ground Handling">Divisi Ground Handling</option>
+                    <option value="Divisi Pemeliharaan (Maintenance)">Divisi Pemeliharaan (Maintenance)</option>
+                    <option value="Divisi Logistik & Pergudangan">Divisi Logistik & Pergudangan</option>
+                    <option value="Divisi Keamanan & K3 (Safety)">Divisi Keamanan & K3 (Safety)</option>
+                    <option value="Divisi Administrasi & Umum">Divisi Administrasi & Umum</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Nama Unit Kerja Pemohon *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Contoh: Unit Kebersihan Terminal 1B Airside"
+                  value={reqName}
+                  onChange={(e) => {
+                    setReqName(e.target.value);
+                    setReqDuplicateError('');
+                  }}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-[#064e3b]/30 focus:outline-none font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Contact Person / PIC Unit</label>
+                <input
+                  type="text"
+                  placeholder="Nama penanggung jawab operasional unit"
+                  value={reqContactPerson}
+                  onChange={(e) => setReqContactPerson(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-[#064e3b]/30 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Keterangan / Ruang Lingkup</label>
+                <textarea
+                  rows={2}
+                  placeholder="Deskripsi tugas, lokasi kerja utama, atau peruntukan barang..."
+                  value={reqDescription}
+                  onChange={(e) => setReqDescription(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-[#064e3b]/30 focus:outline-none resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                <div>
+                  <div className="font-bold text-slate-800">Status Operasi Unit</div>
+                  <div className="text-[11px] text-slate-500">
+                    Hanya unit berstatus aktif yang dapat dipilih pada transaksi Pengeluaran dan Transfer Stok.
+                  </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={reqIsActive}
+                    onChange={(e) => setReqIsActive(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#064e3b]"></div>
+                </label>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isSubmittingReq}
+                onClick={() => setReqUnitModalOpen(false)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingReq}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {isSubmittingReq ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan ke Firestore...</span>
+                  </>
+                ) : (
+                  <span>{editingReqUnitId ? 'Simpan Perubahan' : 'Daftarkan Unit Pemohon'}</span>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: VIEW UNIT PEMOHON DETAILS */}
+      {/* ------------------------------------------------------------------ */}
+      {viewReqUnitDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <div>
+                <span className="font-mono text-xs font-extrabold px-2.5 py-0.5 rounded bg-emerald-50 text-emerald-900 border border-emerald-200">
+                  {viewReqUnitDetail.code || viewReqUnitDetail.unitCode}
+                </span>
+                <h3 className="text-base font-extrabold text-slate-900 mt-1">
+                  {viewReqUnitDetail.name || viewReqUnitDetail.unitName}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewReqUnitDetail(null)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <div>
+                  <span className="text-slate-400 block mb-0.5">Divisi Induk:</span>
+                  <span className="font-bold text-slate-800">{viewReqUnitDetail.division}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block mb-0.5">Contact Person (PIC):</span>
+                  <span className="font-bold text-slate-800">{viewReqUnitDetail.contactPerson || '-'}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block mb-0.5">Status Saat Ini:</span>
+                  <span
+                    className={`font-bold ${
+                      viewReqUnitDetail.isActive !== false ? 'text-emerald-700' : 'text-slate-500'
+                    }`}
+                  >
+                    {viewReqUnitDetail.isActive !== false
+                      ? 'Aktif (Dapat dipilih di transaksi)'
+                      : 'Non-Aktif (Diarsipkan)'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block mb-0.5">Database ID:</span>
+                  <span className="font-mono text-[10px] text-slate-700">{viewReqUnitDetail.id}</span>
+                </div>
+              </div>
+
+              {viewReqUnitDetail.description && (
+                <div>
+                  <span className="text-slate-400 block mb-1">Keterangan / Catatan:</span>
+                  <div className="p-2.5 bg-slate-50 rounded-lg text-slate-700 border border-slate-100">
+                    {viewReqUnitDetail.description}
+                  </div>
+                </div>
+              )}
+
+              {/* Usage references */}
+              <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-100">
+                <span className="text-blue-900 font-bold block mb-1.5">Riwayat Keterlibatan Transaksi:</span>
+                <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="p-2 bg-white rounded-lg border border-blue-100">
+                    <span className="text-[10px] text-slate-500 block">Barang Keluar</span>
+                    <span className="font-extrabold text-blue-900">
+                      {
+                        goodsIssues.filter(
+                          (gi) =>
+                            gi.requesterUnitId === viewReqUnitDetail.id ||
+                            (gi.requestingUnit &&
+                              viewReqUnitDetail.name &&
+                              gi.requestingUnit.toLowerCase() === viewReqUnitDetail.name.toLowerCase())
+                        ).length
+                      }
+                    </span>
+                  </div>
+                  <div className="p-2 bg-white rounded-lg border border-blue-100">
+                    <span className="text-[10px] text-slate-500 block">Transfer Stok</span>
+                    <span className="font-extrabold text-blue-900">
+                      {
+                        stockTransfers.filter(
+                          (st) =>
+                            st.requesterUnitId === viewReqUnitDetail.id ||
+                            (st.requestingUnit &&
+                              viewReqUnitDetail.name &&
+                              st.requestingUnit.toLowerCase() === viewReqUnitDetail.name.toLowerCase())
+                        ).length
+                      }
+                    </span>
+                  </div>
+                  <div className="p-2 bg-white rounded-lg border border-blue-100">
+                    <span className="text-[10px] text-slate-500 block">Permohonan</span>
+                    <span className="font-extrabold text-blue-900">
+                      {
+                        supplyRequests.filter(
+                          (sr) =>
+                            sr.requesterUnitId === viewReqUnitDetail.id ||
+                            (sr.requestingUnit &&
+                              viewReqUnitDetail.name &&
+                              sr.requestingUnit.toLowerCase() === viewReqUnitDetail.name.toLowerCase())
+                        ).length
+                      }
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Metadata */}
+              <div className="text-[11px] text-slate-500 space-y-0.5 pt-1 border-t border-slate-100">
+                <div>
+                  Dibuat oleh:{' '}
+                  <span className="font-mono text-slate-700">{viewReqUnitDetail.createdBy || 'System'}</span>
+                  {viewReqUnitDetail.createdAt && <span> ({viewReqUnitDetail.createdAt})</span>}
+                </div>
+                {viewReqUnitDetail.updatedAt && (
+                  <div>
+                    Terakhir diperbarui:{' '}
+                    <span className="font-mono text-slate-700">{viewReqUnitDetail.updatedBy || 'System'}</span> (
+                    {viewReqUnitDetail.updatedAt})
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setViewReqUnitDetail(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: DELETE UNIT PEMOHON CONFIRMATION (WITH PROTECTED REFERENCING) */}
+      {/* ------------------------------------------------------------------ */}
+      {reqUnitToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3">
+              <div
+                className={`p-2.5 rounded-xl ${
+                  reqDeleteBlockingReason ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-700'
+                }`}
+              >
+                {reqDeleteBlockingReason ? <AlertTriangle className="w-5 h-5" /> : <Trash2 className="w-5 h-5" />}
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  {reqDeleteBlockingReason ? 'Penghapusan Diblokir' : 'Hapus Unit Pemohon'}
+                </h3>
+                <p className="text-xs text-slate-500">Master Data Unit Pemohon PT IAS Support</p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700 space-y-1">
+              <div>
+                Kode Unit: <span className="font-mono font-bold text-slate-900">{reqUnitToDelete.code || reqUnitToDelete.unitCode}</span>
+              </div>
+              <div>
+                Nama Unit: <span className="font-bold text-slate-900">{reqUnitToDelete.name || reqUnitToDelete.unitName}</span>
+              </div>
+              <div>
+                Divisi: <span className="font-medium text-slate-800">{reqUnitToDelete.division}</span>
+              </div>
+            </div>
+
+            {reqDeleteBlockingReason ? (
+              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl space-y-2 text-xs text-amber-900">
+                <p className="leading-relaxed">{reqDeleteBlockingReason}</p>
+                <div className="pt-2 border-t border-amber-200/60 flex items-center justify-between">
+                  <span className="font-semibold text-amber-800">Solusi yang disarankan:</span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await toggleRequestingUnitStatus(reqUnitToDelete.id);
+                      setReqUnitToDelete(null);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-700 text-white font-bold hover:bg-amber-800 transition"
+                  >
+                    Nonaktifkan Unit Ini
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Apakah Anda yakin ingin menghapus data Unit Pemohon ini secara permanen dari Cloud Firestore?
+              </p>
+            )}
+
+            <div className="pt-2 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isDeletingReq}
+                onClick={() => setReqUnitToDelete(null)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 disabled:opacity-50"
+              >
+                {reqDeleteBlockingReason ? 'Mengerti & Tutup' : 'Batal'}
+              </button>
+              {!reqDeleteBlockingReason && (
+                <button
+                  type="button"
+                  disabled={isDeletingReq}
+                  onClick={handleConfirmDeleteReqUnit}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition flex items-center gap-1.5 disabled:opacity-50 shadow-xs"
+                >
+                  {isDeletingReq ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Menghapus...</span>
+                    </>
+                  ) : (
+                    <span>Konfirmasi Hapus</span>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: ADD / EDIT SUPPLIER */}
+      {/* ------------------------------------------------------------------ */}
+      {supModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in">
+          <form
+            onSubmit={handleSubmitSupplier}
+            className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-emerald-100 text-emerald-800">
+                  <Truck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">
+                    {editingSupId ? 'Ubah Data Pemasok' : 'Tambah Pemasok Baru'}
+                  </h3>
+                  <p className="text-xs text-slate-500">Master Data Vendor & Pemasok Barang</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSupModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-700 font-bold block mb-1">Kode Pemasok *</label>
+                  <input
+                    type="text"
+                    required
+                    value={supCode}
+                    onChange={(e) => setSupCode(e.target.value.toUpperCase())}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono font-bold uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-700 font-bold block mb-1">Nama Pemasok *</label>
+                  <input
+                    type="text"
+                    required
+                    value={supName}
+                    onChange={(e) => setSupName(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg font-semibold"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-700 font-bold block mb-1">Contact Person (PIC)</label>
+                  <input
+                    type="text"
+                    value={supContactPerson}
+                    onChange={(e) => setSupContactPerson(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-700 font-bold block mb-1">No. Telepon / HP</label>
+                  <input
+                    type="text"
+                    value={supPhone}
+                    onChange={(e) => setSupPhone(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Alamat Email</label>
+                <input
+                  type="email"
+                  value={supEmail}
+                  onChange={(e) => setSupEmail(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Alamat Kantor / Gudang</label>
+                <textarea
+                  rows={2}
+                  value={supAddress}
+                  onChange={(e) => setSupAddress(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isSubmittingSup}
+                onClick={() => setSupModalOpen(false)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingSup}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold transition flex items-center gap-1.5"
+              >
+                {isSubmittingSup ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Simpan Pemasok</span>}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: DELETE SUPPLIER CONFIRMATION */}
+      {/* ------------------------------------------------------------------ */}
+      {supplierToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-100 text-rose-700">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Hapus Data Pemasok</h3>
+                <p className="text-xs text-slate-500">Master Data Pemasok PT IAS Support</p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700 space-y-1">
+              <div>
+                Kode: <span className="font-mono font-bold text-slate-900">{supplierToDelete.code}</span>
+              </div>
+              <div>
+                Nama: <span className="font-bold text-slate-900">{supplierToDelete.name}</span>
+              </div>
+            </div>
+
+            {supDeleteBlockingReason ? (
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 leading-relaxed">
+                {supDeleteBlockingReason}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Apakah Anda yakin ingin menghapus data pemasok ini?
+              </p>
+            )}
+
+            <div className="pt-2 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isDeletingSup}
+                onClick={() => setSupplierToDelete(null)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+              >
+                {supDeleteBlockingReason ? 'Tutup' : 'Batal'}
+              </button>
+              {!supDeleteBlockingReason && (
+                <button
+                  type="button"
+                  disabled={isDeletingSup}
+                  onClick={handleConfirmDeleteSupplier}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition flex items-center gap-1.5"
+                >
+                  {isDeletingSup ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Konfirmasi Hapus</span>}
+                </button>
+              )}
             </div>
           </div>
         </div>

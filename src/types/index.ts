@@ -116,9 +116,18 @@ export type InventoryItem = InventoryBalance;
 export interface MasterRequestingUnit {
   id: string;
   code: string;
+  unitCode?: string; // alias
   name: string;
+  unitName?: string; // alias
   division: string;
   contactPerson: string;
+  description?: string;
+  isActive: boolean;
+  status?: 'Active' | 'Inactive';
+  createdAt?: string;
+  createdBy?: string;
+  updatedAt?: string;
+  updatedBy?: string;
 }
 
 export interface MasterSupplier {
@@ -129,6 +138,7 @@ export interface MasterSupplier {
   phone: string;
   email: string;
   address: string;
+  isActive?: boolean;
 }
 
 export interface GoodsReceipt {
@@ -157,6 +167,7 @@ export interface GoodsIssue {
   issueNumber: string; // GI-2026-XXXX
   requestDate: string;
   requestingUnit: string;
+  requesterUnitId?: string;
   destination: string;
   itemId: string;
   itemCode: string;
@@ -193,6 +204,8 @@ export interface StockTransfer {
   quantity: number;
   unit: string;
   requestingUser: string;
+  requestingUnit?: string;
+  requesterUnitId?: string;
   sendingUser: string | null;
   receivingUser: string | null;
   status: 'PENDING' | 'IN_TRANSIT' | 'COMPLETED' | 'REJECTED';
@@ -266,6 +279,7 @@ export interface SupplyRequestRecord {
   requestingLocationId: string;
   requestingLocationName: string;
   requestingUnit: string;
+  requesterUnitId?: string;
   materialId: string;
   materialCode: string;
   materialName: string;

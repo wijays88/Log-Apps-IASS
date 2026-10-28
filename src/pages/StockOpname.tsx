@@ -65,7 +65,7 @@ export const StockOpname: React.FC = () => {
     setModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!selectedItem) {
@@ -83,7 +83,7 @@ export const StockOpname: React.FC = () => {
       return;
     }
 
-    const success = createStockOpname({
+    const success = await createStockOpname({
       locationId: formData.locationId,
       itemId: selectedItem.id,
       physicalQuantity: Number(formData.physicalQuantity),
@@ -103,13 +103,13 @@ export const StockOpname: React.FC = () => {
     }
   };
 
-  const handleConfirmReject = () => {
+  const handleConfirmReject = async () => {
     if (!rejectModalId) return;
     if (!rejectReason.trim()) {
       showToast('error', 'Validasi Gagal', 'Alasan penolakan wajib diisi.');
       return;
     }
-    rejectOpnameAdjustment(rejectModalId, rejectReason);
+    await rejectOpnameAdjustment(rejectModalId, rejectReason);
     setRejectModalId(null);
     setRejectReason('');
   };

@@ -98,6 +98,18 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /requestingUnits/{id} {
+      allow read: if isActiveStaff();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /suppliers/{id} {
+      allow read: if isActiveStaff();
+      allow create, update: if isLogistik() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
     // Inventory Ledger & Physical Balances
     match /inventory/{id} {
       allow read: if isActiveStaff();

@@ -21,19 +21,23 @@ export const BarangKeluar: React.FC = () => {
     goodsIssues,
     items,
     requestingUnits,
+    activeRequestingUnits,
     createGoodsIssue,
     currentUser,
     can,
     showToast,
+    setActiveNav,
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [modalOpen, setModalOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
-    requestingUnit: requestingUnits[0]?.name || '',
+    requesterUnitId: activeRequestingUnits[0]?.id || '',
+    requestingUnit: activeRequestingUnits[0]?.name || '',
     destination: '',
     itemId: items[0]?.id || '',
     requestedQuantity: 1,
@@ -62,19 +66,43 @@ export const BarangKeluar: React.FC = () => {
       showToast('error', 'Akses Ditolak', perm.reason || 'Peran Site Head hanya dapat melihat dokumen pengeluaran.');
       return;
     }
+    const defaultUnit = activeRequestingUnits[0];
     setFormData((prev) => ({
       ...prev,
       itemId: prev.itemId || items[0]?.id || '',
-      requestingUnit: prev.requestingUnit || requestingUnits[0]?.name || '',
+      requesterUnitId: prev.requesterUnitId || defaultUnit?.id || '',
+      requestingUnit: prev.requestingUnit || defaultUnit?.name || '',
     }));
     setModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!selectedItemData) {
-      showToast('error', 'Validasi Gagal', 'Pilih item barang.');
+      showToast('error', 'Validasi Gagal', 'Pilih item barang yang tersedia di gudang.');
+      return;
+    }
+
+    if (!formData.requesterUnitId && !formData.requestingUnit) {
+      showToast('error', 'Validasi Gagal', 'Silakan pilih Unit Pemohon yang terdaftar.');
+      return;
+    }
+
+    // Verify unit exists in active list
+    const activeUnit = activeRequestingUnits.find(
+      (u) =>
+        u.id === formData.requesterUnitId ||
+        u.name.toLowerCase() === formData.requestingUnit.toLowerCase() ||
+        u.code.toLowerCase() === formData.requestingUnit.toLowerCase()
+    );
+
+    if (!activeUnit) {
+      showToast(
+        'error',
+        'Unit Pemohon Tidak Valid',
+        'Unit Pemohon yang dipilih tidak aktif atau belum terdaftar di Master Data. Daftarkan/aktifkan terlebih dahulu.'
+      );
       return;
     }
 
@@ -93,26 +121,34 @@ export const BarangKeluar: React.FC = () => {
       return;
     }
 
-    const success = createGoodsIssue({
-      requestingUnit: formData.requestingUnit,
-      destination: formData.destination,
-      materialId: selectedItemData.materialId || selectedItemData.id,
-      locationId: selectedItemData.locationId,
-      requestedQuantity: Number(formData.requestedQuantity),
-      purpose: formData.purpose,
-      notes: formData.notes,
-    });
-
-    if (success) {
-      setModalOpen(false);
-      setFormData({
-        requestingUnit: requestingUnits[0]?.name || '',
-        destination: '',
-        itemId: items[0]?.id || '',
-        requestedQuantity: 1,
-        purpose: '',
-        notes: '',
+    setIsSubmitting(true);
+    try {
+      const success = await createGoodsIssue({
+        requesterUnitId: activeUnit.id,
+        requestingUnit: activeUnit.name,
+        destination: formData.destination.trim(),
+        materialId: selectedItemData.materialId || selectedItemData.id,
+        locationId: selectedItemData.locationId,
+        requestedQuantity: Number(formData.requestedQuantity),
+        purpose: formData.purpose.trim(),
+        notes: formData.notes.trim(),
       });
+
+      if (success) {
+        setModalOpen(false);
+        const nextDefault = activeRequestingUnits[0];
+        setFormData({
+          requesterUnitId: nextDefault?.id || '',
+          requestingUnit: nextDefault?.name || '',
+          destination: '',
+          itemId: items[0]?.id || '',
+          requestedQuantity: 1,
+          purpose: '',
+          notes: '',
+        });
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -321,25 +357,60 @@ export const BarangKeluar: React.FC = () => {
             </div>
 
             <div className="py-4 space-y-3.5 text-xs">
+              {activeRequestingUnits.length === 0 ? (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2 text-amber-900">
+                  <div className="flex items-center gap-2 font-bold text-xs text-amber-800">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Tidak Ada Unit Pemohon yang Aktif</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-amber-800">
+                    Belum ada Unit Pemohon dalam status aktif. Daftarkan atau aktifkan unit pemohon di Master Data sebelum melanjutkan.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModalOpen(false);
+                      setActiveNav('Master Data');
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs transition inline-flex items-center gap-1.5"
+                  >
+                    <span>Buka Master Data &gt; Unit Pemohon</span>
+                  </button>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-slate-600 block mb-1 font-semibold">Unit / Divisi Pemohon</label>
+                  <label className="text-slate-700 block mb-1 font-bold">Unit Kerja Pemohon *</label>
                   <select
                     required
-                    value={formData.requestingUnit}
-                    onChange={(e) => setFormData({ ...formData, requestingUnit: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
+                    disabled={activeRequestingUnits.length === 0}
+                    value={formData.requesterUnitId}
+                    onChange={(e) => {
+                      const selectedId = e.target.value;
+                      const found = activeRequestingUnits.find((u) => u.id === selectedId);
+                      setFormData({
+                        ...formData,
+                        requesterUnitId: selectedId,
+                        requestingUnit: found ? found.name : '',
+                      });
+                    }}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white font-medium disabled:bg-slate-100 disabled:text-slate-400"
                   >
-                    {requestingUnits.map((u) => (
-                      <option key={u.id} value={u.name}>
-                        {u.name}
-                      </option>
-                    ))}
+                    {activeRequestingUnits.length === 0 ? (
+                      <option value="">-- Tidak ada Unit Pemohon aktif --</option>
+                    ) : (
+                      activeRequestingUnits.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          [{u.code || u.unitCode}] {u.name || u.unitName} — {u.division}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
 
                 <div>
-                  <label className="text-slate-600 block mb-1 font-semibold">Tujuan Penggunaan (Lokasi Kerja)</label>
+                  <label className="text-slate-700 block mb-1 font-bold">Tujuan Penggunaan (Lokasi Kerja) *</label>
                   <input
                     type="text"
                     required

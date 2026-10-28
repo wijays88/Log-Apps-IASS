@@ -107,6 +107,20 @@ export const Laporan: React.FC = () => {
         `"${g.status}"`,
         `"${g.requestedBy}"`,
       ]);
+    } else if (selectedReport === 'STOCK_TRANSFERS') {
+      headers = ['No Transfer', 'Tanggal', 'Unit Inisiator', 'Gudang Asal', 'Gudang Tujuan', 'Item', 'Kuantitas', 'Satuan', 'Status', 'Petugas'];
+      rows = stockTransfers.map((t) => [
+        `"${t.transferNumber}"`,
+        `"${t.requestDate}"`,
+        `"${t.requestingUnit || '-'}"`,
+        `"${t.originLocationName}"`,
+        `"${t.destinationLocationName}"`,
+        `"${t.itemName}"`,
+        t.quantity,
+        `"${t.unit}"`,
+        `"${t.status}"`,
+        `"${t.requestingUser}"`,
+      ]);
     } else {
       headers = ['Kode/No', 'Keterangan', 'Lokasi', 'Tanggal'];
       rows = items.map((i) => [`"${i.itemCode}"`, `"${i.itemName}"`, `"${i.locationName}"`, `"${i.lastTransactionDate}"`]);
