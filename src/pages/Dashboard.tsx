@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   Package,
@@ -6,90 +6,235 @@ import {
   AlertTriangle,
   ArrowDownToLine,
   ArrowUpFromLine,
+  ArrowLeftRight,
   Clock,
   Warehouse,
   TrendingUp,
   ArrowRight,
-  ShieldAlert,
   CheckCircle2,
-  ExternalLink,
+  Search,
+  Filter,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  DollarSign,
+  ChevronLeft,
+  ChevronRight,
+  ShieldCheck,
+  Eye,
 } from 'lucide-react';
+import { exportToExcelFile, exportToCsvFile } from '../utils/excelUtils';
 
 export const Dashboard: React.FC = () => {
   const {
     items,
+    materials,
+    activeMaterials,
+    locations,
+    activeLocations,
+    categories,
     goodsReceipts,
     goodsIssues,
     stockTransfers,
     approvals,
-    locations,
     setActiveNav,
     currentUser,
   } = useApp();
 
-  // Metrics calculation
-  const totalActiveSKUs = items.length;
-  const totalInventoryCount = items.reduce((acc, curr) => acc + curr.availableStock, 0);
+  // Stock Table Filter & Pagination States
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedLocation, setSelectedLocation] = useState('ALL');
+  const [selectedCategory, setSelectedCategory] = useState('ALL');
+  const [selectedStockStatus, setSelectedStockStatus] = useState<'ALL' | 'NORMAL' | 'MENIPIS' | 'KOSONG'>('ALL');
+  const [sortField, setSortField] = useState<'materialName' | 'availableStock' | 'minimumStock'>('availableStock');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 8;
 
-  // Critical stock items: availableStock <= minimumStock
-  const criticalItems = items.filter((item) => item.availableStock <= item.minimumStock);
-  const lowStockItems = items.filter(
-    (item) => item.availableStock > item.minimumStock && item.availableStock <= item.reorderPoint
+  // Selected Detail Modal
+  const [selectedDetailItem, setSelectedDetailItem] = useState<any | null>(null);
+
+  // 1. KPI Calculations (Authoritative Real-Time Data)
+  const totalActiveSKUs = useMemo(
+    () => (activeMaterials.length > 0 ? activeMaterials.length : new Set(items.map((i) => i.materialId || i.itemId)).size),
+    [activeMaterials, items]
   );
 
-  // Today's receipts & issues calculated dynamically from current date
+  const totalActiveWarehouses = useMemo(
+    () => (activeLocations.length > 0 ? activeLocations.length : locations.length),
+    [activeLocations, locations]
+  );
+
+  const totalStockQuantity = useMemo(
+    () => items.reduce((acc, curr) => acc + (Number(curr.availableStock) || 0), 0),
+    [items]
+  );
+
+  // Estimated Inventory Valuation (using cost from materials if present, default 25000 per unit for industrial supplies)
+  const estimatedValuation = useMemo(() => {
+    return items.reduce((sum, item) => {
+      const mat = materials.find(
+        (m) =>
+          m.id === item.materialId ||
+          m.materialId === item.materialId ||
+          m.materialCode === item.materialCode ||
+          m.itemCode === item.materialCode
+      );
+      const unitCost = mat?.unitCost || mat?.unitPrice || 35000;
+      return sum + (Number(item.availableStock) || 0) * unitCost;
+    }, 0);
+  }, [items, materials]);
+
+  // Movement & Flow Counters
   const todayStr = new Date().toISOString().slice(0, 10);
   const todayReceipts = goodsReceipts.filter((gr) => gr.receiptDate?.startsWith(todayStr) || gr.createdAt?.startsWith(todayStr));
-  const todayReceiptsCount = todayReceipts.reduce((sum, r) => sum + r.quantity, 0);
+  const todayReceiptsCount = todayReceipts.reduce((sum, r) => sum + (Number(r.quantity) || 0), 0);
 
   const todayIssues = goodsIssues.filter((gi) => gi.requestDate?.startsWith(todayStr) || gi.createdAt?.startsWith(todayStr));
-  const todayIssuesCount = todayIssues.reduce((sum, i) => sum + i.requestedQuantity, 0);
+  const todayIssuesCount = todayIssues.reduce((sum, i) => sum + (Number(i.requestedQuantity) || 0), 0);
+
+  const criticalItems = useMemo(
+    () => items.filter((item) => item.availableStock > 0 && item.availableStock <= item.minimumStock),
+    [items]
+  );
+
+  const emptyStockItems = useMemo(
+    () => items.filter((item) => Number(item.availableStock) <= 0),
+    [items]
+  );
 
   const pendingApprovalsCount = approvals.filter((a) => a.status === 'PENDING').length;
   const inTransitTransfersCount = stockTransfers.filter((t) => t.status === 'IN_TRANSIT').length;
 
-  // Stock distribution by location
-  const locationStats = locations.map((loc) => {
-    const locItems = items.filter((i) => i.locationId === loc.id);
-    const totalQty = locItems.reduce((acc, curr) => acc + curr.availableStock, 0);
-    const skuCount = locItems.length;
-    return {
-      ...loc,
-      totalQty,
-      skuCount,
-    };
-  });
+  // 2. Warehouse Distribution Calculation
+  const locationStats = useMemo(() => {
+    return locations.map((loc) => {
+      const locItems = items.filter((i) => i.locationId === loc.id);
+      const totalQty = locItems.reduce((acc, curr) => acc + (Number(curr.availableStock) || 0), 0);
+      const skuCount = locItems.length;
+      return {
+        ...loc,
+        totalQty,
+        skuCount,
+      };
+    });
+  }, [locations, items]);
+
+  // 3. Filtered Stock Position Table Data
+  const filteredStockData = useMemo(() => {
+    return items.filter((item) => {
+      const code = (item.materialCode || item.itemCode || '').toLowerCase();
+      const name = (item.materialName || item.itemName || '').toLowerCase();
+      const locName = (item.locationName || '').toLowerCase();
+      const cat = (item.categoryId || item.categoryName || '').toLowerCase();
+      const s = searchTerm.toLowerCase();
+
+      const matchSearch = !s || code.includes(s) || name.includes(s) || locName.includes(s) || cat.includes(s);
+      const matchLoc = selectedLocation === 'ALL' || item.locationId === selectedLocation;
+      const matchCat = selectedCategory === 'ALL' || item.categoryId === selectedCategory;
+
+      let matchStatus = true;
+      if (selectedStockStatus === 'KOSONG') matchStatus = Number(item.availableStock) <= 0;
+      else if (selectedStockStatus === 'MENIPIS') matchStatus = item.availableStock > 0 && item.availableStock <= item.minimumStock;
+      else if (selectedStockStatus === 'NORMAL') matchStatus = item.availableStock > item.minimumStock;
+
+      return matchSearch && matchLoc && matchCat && matchStatus;
+    });
+  }, [items, searchTerm, selectedLocation, selectedCategory, selectedStockStatus]);
+
+  // Sorted and Paginated Stock Data
+  const sortedStockData = useMemo(() => {
+    const list = [...filteredStockData];
+    list.sort((a, b) => {
+      let valA: any = a[sortField];
+      let valB: any = b[sortField];
+      if (sortField === 'materialName') {
+        valA = (a.materialName || a.itemName || '').toLowerCase();
+        valB = (b.materialName || b.itemName || '').toLowerCase();
+      }
+      if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+      if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return list;
+  }, [filteredStockData, sortField, sortOrder]);
+
+  const totalPages = Math.ceil(sortedStockData.length / itemsPerPage) || 1;
+  const paginatedStock = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return sortedStockData.slice(start, start + itemsPerPage);
+  }, [sortedStockData, currentPage]);
+
+  const handleSort = (field: 'materialName' | 'availableStock' | 'minimumStock') => {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  };
+
+  // Export handlers
+  const handleExportExcel = () => {
+    const data = filteredStockData.map((item) => ({
+      'Kode Barang': item.materialCode || item.itemCode,
+      'Nama Barang': item.materialName || item.itemName,
+      'Kategori': item.categoryName || item.categoryId,
+      'Gudang / Lokasi': item.locationName,
+      'Satuan': item.unit,
+      'Saldo Stok': item.availableStock,
+      'Stok Minimum': item.minimumStock,
+      'ROP': item.reorderPoint,
+      'Status': item.availableStock <= 0 ? 'KOSONG' : item.availableStock <= item.minimumStock ? 'MENIPIS' : 'NORMAL',
+    }));
+    exportToExcelFile(data, `Posisi_Stok_Control_Tower_${new Date().toISOString().slice(0, 10)}.xlsx`, 'Posisi Stok');
+  };
+
+  const handleExportCSV = () => {
+    const csvData = filteredStockData.map((item) => ({
+      'Kode Barang': item.materialCode || item.itemCode,
+      'Nama Barang': item.materialName || item.itemName,
+      'Kategori': item.categoryName || item.categoryId,
+      'Gudang': item.locationName,
+      'Satuan': item.unit,
+      'Saldo Stok': item.availableStock,
+      'Stok Minimum': item.minimumStock,
+      'Status': item.availableStock <= 0 ? 'KOSONG' : item.availableStock <= item.minimumStock ? 'MENIPIS' : 'NORMAL',
+    }));
+    exportToCsvFile(csvData, `Posisi_Stok_Control_Tower_${new Date().toISOString().slice(0, 10)}.csv`);
+  };
 
   return (
     <div className="space-y-6">
-      {/* Top Banner & Welcome */}
-      <div className="bg-gradient-to-r from-[#064e3b] via-[#065f46] to-[#047857] rounded-2xl p-5 sm:p-6 text-white shadow-md relative overflow-hidden">
+      {/* Top Banner & Welcome - Blue Corporate Theme */}
+      <div className="bg-gradient-to-r from-[#123B66] via-[#1F5FAF] to-[#3182CE] rounded-2xl p-6 text-white shadow-md relative overflow-hidden">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-emerald-400/20 text-emerald-200 text-xs font-semibold backdrop-blur-xs mb-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-white/15 text-[#EFF6FF] text-xs font-semibold backdrop-blur-xs mb-2">
+              <span className="w-2 h-2 rounded-full bg-[#EFF6FF] animate-pulse" />
               Sistem Aktif • Menara Kontrol Terpadu
             </div>
             <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">
               PT IAS SUPPORT — LOGISTICS CONTROL TOWER
             </h1>
-            <p className="text-emerald-100 text-xs sm:text-sm mt-1 max-w-2xl leading-relaxed">
-              Selamat datang, <span className="font-semibold text-white">{currentUser?.fullName}</span>. Anda saat ini bertindak sebagai <span className="font-bold underline uppercase">{currentUser?.role}</span> untuk wilayah operasional {currentUser?.authorizedLocation}.
+            <p className="text-[#EFF6FF]/90 text-xs sm:text-sm mt-1 max-w-2xl leading-relaxed">
+              Selamat datang, <span className="font-semibold text-white">{currentUser?.fullName}</span>. Anda bertindak sebagai{' '}
+              <span className="font-bold uppercase tracking-wider bg-white/20 px-1.5 py-0.5 rounded">{currentUser?.role}</span> untuk wilayah operasional {currentUser?.authorizedLocation}.
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
-              onClick={() => setActiveNav('Posisi Persediaan')}
-              className="px-3.5 py-2 rounded-xl bg-white text-[#064e3b] hover:bg-emerald-50 font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-1.5"
+              onClick={() => setActiveNav('Kartu Stok')}
+              className="px-3.5 py-2 rounded-xl bg-white text-[#123B66] hover:bg-[#EFF6FF] font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-1.5"
             >
-              <Boxes className="w-4 h-4" />
-              <span>Cek Stok Barang</span>
+              <FileText className="w-4 h-4 text-[#1F5FAF]" />
+              <span>Buka Kartu Stok</span>
             </button>
             {currentUser?.role !== 'SITE HEAD' && (
               <button
                 onClick={() => setActiveNav('Barang Masuk')}
-                className="px-3.5 py-2 rounded-xl bg-emerald-700/80 hover:bg-emerald-700 text-white font-semibold text-xs sm:text-sm border border-emerald-500/50 shadow-sm transition flex items-center gap-1.5"
+                className="px-3.5 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white font-semibold text-xs sm:text-sm border border-white/30 transition flex items-center gap-1.5"
               >
                 <ArrowDownToLine className="w-4 h-4" />
                 <span>Input Masuk</span>
@@ -98,425 +243,553 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Decorative background element */}
-        <div className="absolute right-0 bottom-0 translate-x-12 translate-y-8 w-64 h-64 rounded-full bg-emerald-400/10 blur-2xl pointer-events-none" />
+        {/* Subtle Decorative Aura */}
+        <div className="absolute right-0 bottom-0 translate-x-12 translate-y-8 w-64 h-64 rounded-full bg-white/10 blur-2xl pointer-events-none" />
       </div>
 
-      {/* KPI Cards Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5 sm:gap-4">
-        {/* Card 1: Total SKUs */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs hover:border-emerald-300 transition group">
-          <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className="font-medium">Total SKU Aktif</span>
-            <div className="p-1.5 rounded-lg bg-emerald-50 text-[#064e3b] group-hover:bg-[#064e3b] group-hover:text-white transition">
+      {/* 10 Executive KPI Cards Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+        {/* KPI 1: Total SKU Aktif */}
+        <div className="bg-white p-4 rounded-2xl border border-[#D9E2EF] shadow-2xs hover:border-[#3182CE] transition group">
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className="font-bold text-[11px] uppercase tracking-wider">Total SKU Aktif</span>
+            <div className="p-1.5 rounded-lg bg-[#EFF6FF] text-[#1F5FAF]">
               <Package className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-slate-900 tracking-tight">
+          <div className="text-2xl font-extrabold text-[#123B66] font-mono">
             {totalActiveSKUs}
           </div>
-          <div className="mt-1 text-[11px] text-slate-500 flex items-center gap-1">
-            <span>Tersebar di {locations.length} gudang</span>
+          <div className="mt-1 text-[11px] text-[#64748B]">
+            Terdaftar di katalog
           </div>
         </div>
 
-        {/* Card 2: Total Inventory Count */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs hover:border-emerald-300 transition group">
-          <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className="font-medium">Total Fisik Unit</span>
-            <div className="p-1.5 rounded-lg bg-blue-50 text-blue-700 group-hover:bg-blue-600 group-hover:text-white transition">
+        {/* KPI 2: Total Gudang Aktif */}
+        <div className="bg-white p-4 rounded-2xl border border-[#D9E2EF] shadow-2xs hover:border-[#3182CE] transition group">
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className="font-bold text-[11px] uppercase tracking-wider">Gudang Aktif</span>
+            <div className="p-1.5 rounded-lg bg-[#EFF6FF] text-[#1F5FAF]">
+              <Warehouse className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-2xl font-extrabold text-[#123B66] font-mono">
+            {totalActiveWarehouses}
+          </div>
+          <div className="mt-1 text-[11px] text-[#64748B]">
+            Hub operasional bandara
+          </div>
+        </div>
+
+        {/* KPI 3: Total Kuantitas Stok Fisik */}
+        <div className="bg-white p-4 rounded-2xl border border-[#D9E2EF] shadow-2xs hover:border-[#3182CE] transition group">
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className="font-bold text-[11px] uppercase tracking-wider">Total Fisik Unit</span>
+            <div className="p-1.5 rounded-lg bg-[#EFF6FF] text-[#1F5FAF]">
               <Boxes className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-slate-900 tracking-tight">
-            {totalInventoryCount.toLocaleString('id-ID')}
+          <div className="text-2xl font-extrabold text-[#123B66] font-mono">
+            {totalStockQuantity.toLocaleString('id-ID')}
           </div>
-          <div className="mt-1 text-[11px] text-emerald-600 font-semibold flex items-center gap-0.5">
-            <TrendingUp className="w-3 h-3" />
-            <span>Persediaan siap pakai</span>
+          <div className="mt-1 text-[11px] text-[#1F5FAF] font-semibold">
+            Saldo stok siap pakai
           </div>
         </div>
 
-        {/* Card 3: Critical Stock Alert */}
+        {/* KPI 4: Estimasi Nilai Persediaan */}
+        <div className="bg-white p-4 rounded-2xl border border-[#D9E2EF] shadow-2xs hover:border-[#3182CE] transition group">
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className="font-bold text-[11px] uppercase tracking-wider">Nilai Persediaan</span>
+            <div className="p-1.5 rounded-lg bg-[#EFF6FF] text-[#1F5FAF]">
+              <DollarSign className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-xl font-extrabold text-[#123B66] font-mono truncate" title={`Rp ${estimatedValuation.toLocaleString('id-ID')}`}>
+            Rp {(estimatedValuation / 1000000).toFixed(1)}Jt
+          </div>
+          <div className="mt-1 text-[11px] text-[#64748B]">
+            Estimasi total aset logistik
+          </div>
+        </div>
+
+        {/* KPI 5: Barang Masuk Hari Ini */}
+        <div className="bg-white p-4 rounded-2xl border border-[#D9E2EF] shadow-2xs hover:border-[#3182CE] transition group">
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className="font-bold text-[11px] uppercase tracking-wider">Masuk Hari Ini</span>
+            <div className="p-1.5 rounded-lg bg-blue-50 text-blue-700">
+              <ArrowDownToLine className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-2xl font-extrabold text-[#123B66] font-mono">
+            {todayReceiptsCount} <span className="text-xs font-normal text-[#64748B]">unit</span>
+          </div>
+          <div className="mt-1 text-[11px] text-[#64748B]">
+            {todayReceipts.length} batch dokumen GR
+          </div>
+        </div>
+
+        {/* KPI 6: Barang Keluar Hari Ini */}
+        <div className="bg-white p-4 rounded-2xl border border-[#D9E2EF] shadow-2xs hover:border-[#3182CE] transition group">
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className="font-bold text-[11px] uppercase tracking-wider">Keluar Hari Ini</span>
+            <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-700">
+              <ArrowUpFromLine className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-2xl font-extrabold text-[#123B66] font-mono">
+            {todayIssuesCount} <span className="text-xs font-normal text-[#64748B]">unit</span>
+          </div>
+          <div className="mt-1 text-[11px] text-[#64748B]">
+            {todayIssues.length} permintaan unit kerja
+          </div>
+        </div>
+
+        {/* KPI 7: Stok Kritis (<= Min Stock) */}
         <div
-          onClick={() => setActiveNav('Posisi Persediaan')}
-          className={`p-4 rounded-xl border transition cursor-pointer group ${
+          onClick={() => {
+            setSelectedStockStatus('MENIPIS');
+            const el = document.getElementById('stock-table-section');
+            el?.scrollIntoView({ behavior: 'smooth' });
+          }}
+          className={`p-4 rounded-2xl border transition cursor-pointer group ${
             criticalItems.length > 0
-              ? 'bg-rose-50/50 border-rose-200 hover:border-rose-300'
-              : 'bg-white border-slate-200 hover:border-slate-300'
+              ? 'bg-amber-50/50 border-amber-200 hover:border-amber-400'
+              : 'bg-white border-[#D9E2EF]'
           }`}
         >
-          <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className={`font-semibold ${criticalItems.length > 0 ? 'text-rose-800' : 'text-slate-500'}`}>
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className={`font-bold text-[11px] uppercase tracking-wider ${criticalItems.length > 0 ? 'text-amber-900' : 'text-[#64748B]'}`}>
               Stok Kritis (≤ Min)
             </span>
-            <div className={`p-1.5 rounded-lg ${criticalItems.length > 0 ? 'bg-rose-100 text-rose-700 animate-pulse' : 'bg-slate-100 text-slate-600'}`}>
+            <div className={`p-1.5 rounded-lg ${criticalItems.length > 0 ? 'bg-amber-100 text-amber-700 animate-pulse' : 'bg-slate-100 text-[#64748B]'}`}>
               <AlertTriangle className="w-4 h-4" />
             </div>
           </div>
-          <div className={`text-2xl font-extrabold tracking-tight ${criticalItems.length > 0 ? 'text-rose-700' : 'text-slate-900'}`}>
+          <div className={`text-2xl font-extrabold font-mono ${criticalItems.length > 0 ? 'text-amber-800' : 'text-[#123B66]'}`}>
             {criticalItems.length}
           </div>
-          <div className="mt-1 text-[11px] text-rose-600 font-medium">
+          <div className="mt-1 text-[11px] text-amber-700 font-medium">
             {criticalItems.length > 0 ? 'Perlu tindakan restock segera' : 'Semua item di atas batas'}
           </div>
         </div>
 
-        {/* Card 4: Goods Receipts */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs hover:border-emerald-300 transition group">
-          <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className="font-medium">Penerimaan Hari Ini</span>
-            <div className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 group-hover:bg-emerald-600 group-hover:text-white transition">
-              <ArrowDownToLine className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="text-2xl font-extrabold text-slate-900 tracking-tight">
-            {todayReceiptsCount} <span className="text-xs font-normal text-slate-500">unit</span>
-          </div>
-          <div className="mt-1 text-[11px] text-slate-500">
-            {todayReceipts.length} batch dokumen masuk
-          </div>
-        </div>
-
-        {/* Card 5: Goods Issues */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs hover:border-emerald-300 transition group">
-          <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className="font-medium">Pengeluaran Hari Ini</span>
-            <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-700 group-hover:bg-indigo-600 group-hover:text-white transition">
-              <ArrowUpFromLine className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="text-2xl font-extrabold text-slate-900 tracking-tight">
-            {todayIssuesCount} <span className="text-xs font-normal text-slate-500">unit</span>
-          </div>
-          <div className="mt-1 text-[11px] text-slate-500">
-            {todayIssues.length} permintaan operasional
-          </div>
-        </div>
-
-        {/* Card 6: Pending Transactions */}
+        {/* KPI 8: Stok Kosong (0 Qty) */}
         <div
-          onClick={() => setActiveNav('Approval Center')}
-          className={`p-4 rounded-xl border transition cursor-pointer group ${
-            pendingApprovalsCount > 0
-              ? 'bg-amber-50/60 border-amber-300 hover:border-amber-400'
-              : 'bg-white border-slate-200 hover:border-slate-300'
+          onClick={() => {
+            setSelectedStockStatus('KOSONG');
+            const el = document.getElementById('stock-table-section');
+            el?.scrollIntoView({ behavior: 'smooth' });
+          }}
+          className={`p-4 rounded-2xl border transition cursor-pointer group ${
+            emptyStockItems.length > 0
+              ? 'bg-rose-50/50 border-rose-200 hover:border-rose-400'
+              : 'bg-white border-[#D9E2EF]'
           }`}
         >
-          <div className="flex items-center justify-between text-slate-500 text-xs mb-2">
-            <span className={`font-semibold ${pendingApprovalsCount > 0 ? 'text-amber-900' : 'text-slate-500'}`}>
-              Pending Approval
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className={`font-bold text-[11px] uppercase tracking-wider ${emptyStockItems.length > 0 ? 'text-rose-900' : 'text-[#64748B]'}`}>
+              Stok Kosong (0)
             </span>
-            <div className={`p-1.5 rounded-lg ${pendingApprovalsCount > 0 ? 'bg-amber-200 text-amber-900' : 'bg-slate-100 text-slate-600'}`}>
-              <Clock className="w-4 h-4" />
+            <div className={`p-1.5 rounded-lg ${emptyStockItems.length > 0 ? 'bg-rose-100 text-rose-700 animate-pulse' : 'bg-slate-100 text-[#64748B]'}`}>
+              <AlertTriangle className="w-4 h-4" />
             </div>
           </div>
-          <div className={`text-2xl font-extrabold tracking-tight ${pendingApprovalsCount > 0 ? 'text-amber-800' : 'text-slate-900'}`}>
+          <div className={`text-2xl font-extrabold font-mono ${emptyStockItems.length > 0 ? 'text-rose-700' : 'text-[#123B66]'}`}>
+            {emptyStockItems.length}
+          </div>
+          <div className="mt-1 text-[11px] text-rose-600 font-medium">
+            {emptyStockItems.length > 0 ? 'Habis total di lokasi' : 'Tidak ada SKU kosong'}
+          </div>
+        </div>
+
+        {/* KPI 9: Menunggu Approval */}
+        <div
+          onClick={() => setActiveNav('Approval Center')}
+          className={`p-4 rounded-2xl border transition cursor-pointer group ${
+            pendingApprovalsCount > 0
+              ? 'bg-[#EFF6FF] border-[#3182CE] hover:border-[#1F5FAF]'
+              : 'bg-white border-[#D9E2EF]'
+          }`}
+        >
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className={`font-bold text-[11px] uppercase tracking-wider ${pendingApprovalsCount > 0 ? 'text-[#123B66]' : 'text-[#64748B]'}`}>
+              Pending Approval
+            </span>
+            <div className={`p-1.5 rounded-lg ${pendingApprovalsCount > 0 ? 'bg-blue-100 text-[#1F5FAF]' : 'bg-slate-100 text-[#64748B]'}`}>
+              <ShieldCheck className="w-4 h-4" />
+            </div>
+          </div>
+          <div className={`text-2xl font-extrabold font-mono ${pendingApprovalsCount > 0 ? 'text-[#1F5FAF]' : 'text-[#123B66]'}`}>
             {pendingApprovalsCount}
           </div>
-          <div className="mt-1 text-[11px] text-amber-700 font-medium flex items-center justify-between">
-            <span>Menunggu otorisasi</span>
+          <div className="mt-1 text-[11px] text-[#1F5FAF] font-medium flex items-center justify-between">
+            <span>Menunggu verifikasi</span>
+            <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition" />
+          </div>
+        </div>
+
+        {/* KPI 10: Transfer dalam Proses (In Transit) */}
+        <div
+          onClick={() => setActiveNav('Transfer Stok')}
+          className={`p-4 rounded-2xl border transition cursor-pointer group ${
+            inTransitTransfersCount > 0
+              ? 'bg-indigo-50/60 border-indigo-200 hover:border-indigo-400'
+              : 'bg-white border-[#D9E2EF]'
+          }`}
+        >
+          <div className="flex items-center justify-between text-[#64748B] text-xs mb-1.5">
+            <span className={`font-bold text-[11px] uppercase tracking-wider ${inTransitTransfersCount > 0 ? 'text-indigo-900' : 'text-[#64748B]'}`}>
+              Transfer Transit
+            </span>
+            <div className={`p-1.5 rounded-lg ${inTransitTransfersCount > 0 ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-[#64748B]'}`}>
+              <ArrowLeftRight className="w-4 h-4" />
+            </div>
+          </div>
+          <div className={`text-2xl font-extrabold font-mono ${inTransitTransfersCount > 0 ? 'text-indigo-800' : 'text-[#123B66]'}`}>
+            {inTransitTransfersCount}
+          </div>
+          <div className="mt-1 text-[11px] text-indigo-700 font-medium flex items-center justify-between">
+            <span>Dalam perjalanan</span>
             <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition" />
           </div>
         </div>
       </div>
 
-      {/* Two Column Layout: Critical Stock Attention & Stock by Location */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column (2 Cols): Critical & Low Stock Monitoring */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Critical Stock Alert Box */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+      {/* Main Stock Position Table Section per Section 10 */}
+      <div id="stock-table-section" className="bg-white rounded-2xl border border-[#D9E2EF] shadow-2xs overflow-hidden">
+        {/* Table Header & Controls Ribbon */}
+        <div className="p-5 border-b border-[#D9E2EF] bg-[#F7F9FC]">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div>
               <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-rose-100 text-rose-700">
-                  <AlertTriangle className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Indikator Stok Kritis & Perlu Pemesanan Ulang
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Item dengan saldo persediaan berada di bawah batas minimum (ROP)
-                  </p>
-                </div>
+                <Boxes className="w-5 h-5 text-[#1F5FAF]" />
+                <h2 className="text-base font-extrabold text-[#123B66]">
+                  Tabel Posisi Stok Inventaris Real-Time
+                </h2>
               </div>
-              <button
-                onClick={() => setActiveNav('Posisi Persediaan')}
-                className="text-xs font-semibold text-[#064e3b] hover:underline flex items-center gap-1"
-              >
-                <span>Lihat Semua</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+              <p className="text-xs text-[#64748B] mt-0.5">
+                Monitoring saldo per gudang, batas minimum, status ketersediaan, dan kartu stok
+              </p>
             </div>
 
-            <div className="divide-y divide-slate-100 overflow-x-auto">
-              {[...criticalItems, ...lowStockItems].length === 0 ? (
-                <div className="p-8 text-center text-slate-500 text-xs">
-                  <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
-                  Semua persediaan berada pada batas aman operasional.
-                </div>
-              ) : (
-                [...criticalItems, ...lowStockItems].map((item) => {
-                  const isCritical = item.availableStock <= item.minimumStock;
-                  return (
-                    <div
-                      key={item.id}
-                      className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/80 transition"
-                    >
-                      <div className="flex items-start gap-3">
-                        <span
-                          className={`mt-0.5 px-2 py-0.5 rounded text-[11px] font-bold uppercase shrink-0 ${
-                            isCritical
-                              ? 'bg-rose-100 text-rose-800 border border-rose-200'
-                              : 'bg-amber-100 text-amber-800 border border-amber-200'
-                          }`}
-                        >
-                          {isCritical ? 'KRITIS' : 'MENIPIS'}
-                        </span>
-                        <div>
-                          <div className="text-xs font-bold text-slate-900 leading-snug">
-                            {item.itemName}
-                          </div>
-                          <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-                            SKU: {item.itemCode} • Lokasi: {item.locationName}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-4 sm:text-right shrink-0">
-                        <div>
-                          <div className="text-xs text-slate-500">Sisa Stok Fisik</div>
-                          <div className={`text-sm font-extrabold font-mono ${isCritical ? 'text-rose-600' : 'text-amber-700'}`}>
-                            {item.availableStock} {item.unit}
-                          </div>
-                        </div>
-                        <div className="border-l border-slate-200 pl-4 text-xs text-slate-500">
-                          <div>Min: <span className="font-semibold text-slate-700">{item.minimumStock}</span></div>
-                          <div>ROP: <span className="font-semibold text-slate-700">{item.reorderPoint}</span></div>
-                        </div>
-                        {currentUser?.role !== 'SITE HEAD' && (
-                          <button
-                            onClick={() => setActiveNav('Barang Masuk')}
-                            className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-50 text-[#064e3b] hover:bg-emerald-100 border border-emerald-200 transition"
-                          >
-                            Restock
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleExportExcel}
+                className="px-3 py-1.5 rounded-xl bg-white text-[#123B66] hover:bg-[#EFF6FF] border border-[#D9E2EF] font-bold text-xs shadow-2xs transition flex items-center gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5 text-[#1F5FAF]" />
+                <span>Export Excel</span>
+              </button>
+              <button
+                onClick={handleExportCSV}
+                className="px-3 py-1.5 rounded-xl bg-white text-[#64748B] hover:bg-slate-100 border border-[#D9E2EF] font-semibold text-xs shadow-2xs transition flex items-center gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>CSV</span>
+              </button>
             </div>
           </div>
 
-          {/* Recent Operational Movements (Barang Masuk, Keluar, Transfer) */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-800">
-                  <TrendingUp className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Aktivitas Transaksi Inventaris Terkini
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Jurnal mutasi masuk, keluar, dan transfer terdaftar
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setActiveNav('Audit Trail')}
-                className="text-xs font-semibold text-[#064e3b] hover:underline flex items-center gap-1"
-              >
-                <span>Audit Lengkap</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+          {/* Filters Bar */}
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* Search */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-[#64748B] absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Cari kode, nama, atau gudang..."
+                value={searchTerm}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setCurrentPage(1);
+                }}
+                className="w-full pl-9 pr-3 py-2 bg-white border border-[#D9E2EF] rounded-xl text-xs sm:text-sm font-medium text-[#1F2937] focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF]"
+              />
             </div>
 
-            <div className="divide-y divide-slate-100">
-              {/* Combine top recent records or show empty state */}
-              {goodsReceipts.length === 0 && goodsIssues.length === 0 && stockTransfers.length === 0 && (
-                <div className="p-8 text-center text-slate-400">
-                  <Clock className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                  <p className="font-semibold text-slate-600 text-xs">Belum ada transaksi inventaris tercatat</p>
-                  <p className="text-[11px] text-slate-400 mt-1">Transaksi penerimaan barang, pengeluaran, atau transfer akan otomatis tampil di sini.</p>
-                </div>
-              )}
+            {/* Warehouse Filter */}
+            <div className="relative">
+              <Warehouse className="w-4 h-4 text-[#64748B] absolute left-3 top-2.5" />
+              <select
+                value={selectedLocation}
+                onChange={(e) => {
+                  setSelectedLocation(e.target.value);
+                  setCurrentPage(1);
+                }}
+                className="w-full pl-9 pr-3 py-2 bg-white border border-[#D9E2EF] rounded-xl text-xs sm:text-sm font-medium text-[#1F2937] focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF]"
+              >
+                <option value="ALL">Semua Gudang ({locations.length})</option>
+                {locations.map((loc) => (
+                  <option key={loc.id} value={loc.id}>
+                    {loc.name}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-              {goodsReceipts.slice(0, 2).map((gr) => (
-                <div key={gr.id} className="p-4 flex items-center justify-between text-xs hover:bg-slate-50 transition">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-emerald-100 text-emerald-800 shrink-0">
-                      <ArrowDownToLine className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="font-bold text-slate-900">
-                        Penerimaan Barang: {gr.itemName} (+{gr.quantity} {gr.unit})
-                      </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        Ref: {gr.receiptNumber} • Supplier: {gr.sourceSupplier} • Petugas: {gr.recordedBy}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                      POSTED
-                    </span>
-                    <div className="text-[11px] text-slate-400 mt-1 font-mono">
-                      {gr.receiptDate}
-                    </div>
-                  </div>
-                </div>
-              ))}
+            {/* Category Filter */}
+            <div>
+              <select
+                value={selectedCategory}
+                onChange={(e) => {
+                  setSelectedCategory(e.target.value);
+                  setCurrentPage(1);
+                }}
+                className="w-full px-3 py-2 bg-white border border-[#D9E2EF] rounded-xl text-xs sm:text-sm font-medium text-[#1F2937] focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF]"
+              >
+                <option value="ALL">Semua Kategori ({categories.length})</option>
+                {categories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-              {goodsIssues.slice(0, 2).map((gi) => (
-                <div key={gi.id} className="p-4 flex items-center justify-between text-xs hover:bg-slate-50 transition">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-indigo-100 text-indigo-800 shrink-0">
-                      <ArrowUpFromLine className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="font-bold text-slate-900">
-                        Pengeluaran: {gi.itemName} ({gi.requestedQuantity} {gi.unit})
-                      </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        Dokumen: {gi.issueNumber} • Pemohon: {gi.requestingUnit} ({gi.requestedBy})
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        gi.status === 'APPROVED'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : gi.status === 'REJECTED'
-                          ? 'bg-rose-100 text-rose-800'
-                          : 'bg-amber-100 text-amber-800'
-                      }`}
-                    >
-                      {gi.status}
-                    </span>
-                    <div className="text-[11px] text-slate-400 mt-1 font-mono">
-                      {gi.requestDate}
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              {stockTransfers.slice(0, 1).map((tr) => (
-                <div key={tr.id} className="p-4 flex items-center justify-between text-xs hover:bg-slate-50 transition">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-purple-100 text-purple-800 shrink-0">
-                      <TrendingUp className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="font-bold text-slate-900">
-                        Transfer Antar Gudang: {tr.itemName} ({tr.quantity} {tr.unit})
-                      </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        {tr.originLocationName} → {tr.destinationLocationName} • No: {tr.transferNumber}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        tr.status === 'COMPLETED'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : tr.status === 'IN_TRANSIT'
-                          ? 'bg-blue-100 text-blue-800'
-                          : 'bg-amber-100 text-amber-800'
-                      }`}
-                    >
-                      {tr.status}
-                    </span>
-                    <div className="text-[11px] text-slate-400 mt-1 font-mono">
-                      {tr.requestDate}
-                    </div>
-                  </div>
-                </div>
-              ))}
+            {/* Status Filter */}
+            <div>
+              <select
+                value={selectedStockStatus}
+                onChange={(e) => {
+                  setSelectedStockStatus(e.target.value as any);
+                  setCurrentPage(1);
+                }}
+                className="w-full px-3 py-2 bg-white border border-[#D9E2EF] rounded-xl text-xs sm:text-sm font-medium text-[#1F2937] focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF]"
+              >
+                <option value="ALL">Semua Status Stok</option>
+                <option value="NORMAL">Normal (Aman)</option>
+                <option value="MENIPIS">Menipis (≤ Min Stock)</option>
+                <option value="KOSONG">Kosong (Saldo 0)</option>
+              </select>
             </div>
           </div>
         </div>
 
-        {/* Right Column (1 Col): Location Breakdown & Control Tower Summary */}
-        <div className="space-y-6">
-          {/* Distribution by Warehouse */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-5">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Warehouse className="w-4 h-4 text-[#064e3b]" />
-                <h3 className="text-sm font-bold text-slate-900">
-                  Distribusi Stok per Lokasi
-                </h3>
-              </div>
-              <span className="text-[11px] text-slate-500">PT IAS Support</span>
-            </div>
-
-            <div className="space-y-4">
-              {locationStats.length === 0 ? (
-                <div className="py-6 text-center text-slate-400">
-                  <Warehouse className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                  <p className="font-semibold text-slate-600 text-xs">Belum ada lokasi gudang terdaftar</p>
-                  <p className="text-[11px] text-slate-400 mt-1">Tambahkan lokasi baru melalui menu Master Lokasi.</p>
-                </div>
+        {/* Table View */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs sm:text-sm">
+            <thead>
+              <tr className="bg-[#F7F9FC] text-[#64748B] border-b border-[#D9E2EF] font-bold uppercase text-[11px] tracking-wider">
+                <th className="py-3 px-4">Kode Barang</th>
+                <th
+                  onClick={() => handleSort('materialName')}
+                  className="py-3 px-4 cursor-pointer hover:text-[#123B66] select-none"
+                >
+                  Nama Barang {sortField === 'materialName' && (sortOrder === 'asc' ? '↑' : '↓')}
+                </th>
+                <th className="py-3 px-4">Kategori</th>
+                <th className="py-3 px-4">Gudang</th>
+                <th className="py-3 px-4">Satuan</th>
+                <th
+                  onClick={() => handleSort('availableStock')}
+                  className="py-3 px-4 text-right cursor-pointer hover:text-[#123B66] select-none"
+                >
+                  Saldo Stok {sortField === 'availableStock' && (sortOrder === 'asc' ? '↑' : '↓')}
+                </th>
+                <th
+                  onClick={() => handleSort('minimumStock')}
+                  className="py-3 px-4 text-right cursor-pointer hover:text-[#123B66] select-none"
+                >
+                  Stok Min {sortField === 'minimumStock' && (sortOrder === 'asc' ? '↑' : '↓')}
+                </th>
+                <th className="py-3 px-4 text-center">Status</th>
+                <th className="py-3 px-4 text-right">Aksi</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#D9E2EF]">
+              {paginatedStock.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="py-12 text-center text-[#64748B]">
+                    <Boxes className="w-8 h-8 text-[#64748B]/40 mx-auto mb-2" />
+                    <p className="font-semibold text-sm text-[#1F2937]">Tidak ada data persediaan sesuai filter</p>
+                    <p className="text-xs text-[#64748B] mt-1">Coba ubah kata kunci pencarian atau reset filter.</p>
+                  </td>
+                </tr>
               ) : (
-                locationStats.map((loc) => {
-                  const percentage = totalInventoryCount > 0 ? Math.round((loc.totalQty / totalInventoryCount) * 100) : 0;
+                paginatedStock.map((item) => {
+                  const isZero = Number(item.availableStock) <= 0;
+                  const isLow = !isZero && item.availableStock <= item.minimumStock;
+
                   return (
-                    <div key={loc.id} className="text-xs">
-                      <div className="flex items-center justify-between font-semibold text-slate-800 mb-1">
-                        <span className="truncate pr-2">{loc.name}</span>
-                        <span className="font-mono text-[#064e3b] shrink-0">
-                          {loc.totalQty.toLocaleString('id-ID')} unit ({percentage}%)
+                    <tr key={item.id} className="hover:bg-[#EFF6FF]/40 transition">
+                      <td className="py-3 px-4 font-mono font-bold text-[#1F5FAF] whitespace-nowrap">
+                        {item.materialCode || item.itemCode}
+                      </td>
+                      <td className="py-3 px-4 font-semibold text-[#1F2937]">
+                        {item.materialName || item.itemName}
+                      </td>
+                      <td className="py-3 px-4 text-[#64748B] whitespace-nowrap">
+                        {item.categoryName || item.categoryId}
+                      </td>
+                      <td className="py-3 px-4 text-[#1F2937] whitespace-nowrap">
+                        {item.locationName}
+                      </td>
+                      <td className="py-3 px-4 text-[#64748B] font-mono text-xs">
+                        {item.unit}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono font-extrabold text-sm text-[#123B66]">
+                        {item.availableStock.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-xs text-[#64748B]">
+                        {item.minimumStock}
+                      </td>
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold ${
+                            isZero
+                              ? 'bg-rose-100 text-rose-800'
+                              : isLow
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-blue-100 text-[#1F5FAF]'
+                          }`}
+                        >
+                          {isZero ? 'KOSONG' : isLow ? 'MENIPIS' : 'NORMAL'}
                         </span>
-                      </div>
-                      <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-[#064e3b] transition-all duration-500"
-                          style={{ width: `${percentage}%` }}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1 font-mono">
-                        <span>PIC: {loc.picName}</span>
-                        <span>{loc.skuCount} SKU terdaftar</span>
-                      </div>
-                    </div>
+                      </td>
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => setSelectedDetailItem(item)}
+                            className="p-1.5 text-[#64748B] hover:text-[#1F5FAF] hover:bg-[#EFF6FF] rounded-lg transition"
+                            title="Detail Posisi Stok"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setActiveNav('Kartu Stok')}
+                            className="p-1.5 text-[#1F5FAF] hover:bg-[#EFF6FF] rounded-lg transition"
+                            title="Buka Kartu Stok"
+                          >
+                            <FileText className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
                   );
                 })
               )}
-            </div>
+            </tbody>
+          </table>
+        </div>
 
-            <div className="mt-5 pt-4 border-t border-slate-100">
-              <button
-                onClick={() => setActiveNav('Transfer Stok')}
-                className="w-full py-2 px-3 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold border border-slate-200 transition flex items-center justify-center gap-1.5"
-              >
-                <span>Kelola Transfer Antar Gudang</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
+        {/* Pagination Bar */}
+        <div className="p-4 border-t border-[#D9E2EF] bg-[#F7F9FC] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="text-xs text-[#64748B]">
+            Menampilkan <span className="font-bold text-[#1F2937]">{paginatedStock.length}</span> dari{' '}
+            <span className="font-bold text-[#1F2937]">{filteredStockData.length}</span> record stok terdaftar
           </div>
 
-          {/* Quick Operations Summary */}
-          <div className="bg-slate-900 text-slate-100 rounded-xl p-5 shadow-sm">
-            <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-2">
-              Protokol Tata Kelola PT IAS Support
-            </h4>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Sistem menara kontrol menerapkan pencegahan saldo negatif otomatis. Setiap mutasi fisik wajib didokumentasikan dan diverifikasi oleh Administrator sebelum pengeluaran stok diproses.
-            </p>
-            <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
-              <span>Timezone: Asia/Jakarta (WIB)</span>
-              <span className="text-emerald-400 font-semibold">Strict RBAC</span>
-            </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="p-1.5 rounded-lg border border-[#D9E2EF] bg-white text-[#64748B] hover:bg-slate-100 disabled:opacity-40 transition"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-xs font-semibold text-[#1F2937] px-2">
+              Halaman {currentPage} / {totalPages}
+            </span>
+            <button
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="p-1.5 rounded-lg border border-[#D9E2EF] bg-white text-[#64748B] hover:bg-slate-100 disabled:opacity-40 transition"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </div>
+
+      {/* Detail Modal for Item Drill-down */}
+      {selectedDetailItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#123B66]/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-[#D9E2EF] space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-[#D9E2EF] pb-3">
+              <div className="flex items-center gap-2">
+                <Package className="w-5 h-5 text-[#1F5FAF]" />
+                <h3 className="text-base font-extrabold text-[#123B66]">
+                  Detail Posisi Persediaan
+                </h3>
+              </div>
+              <button
+                onClick={() => setSelectedDetailItem(null)}
+                className="text-[#64748B] hover:text-[#1F2937] text-sm font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs sm:text-sm">
+              <div className="grid grid-cols-2 gap-3 p-3 bg-[#F7F9FC] rounded-xl border border-[#D9E2EF]">
+                <div>
+                  <span className="text-[11px] text-[#64748B] uppercase font-bold block">Kode SKU</span>
+                  <span className="font-mono font-extrabold text-[#1F5FAF] text-sm">
+                    {selectedDetailItem.materialCode || selectedDetailItem.itemCode}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-[#64748B] uppercase font-bold block">Lokasi Gudang</span>
+                  <span className="font-semibold text-[#1F2937]">
+                    {selectedDetailItem.locationName}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <span className="text-[11px] text-[#64748B] uppercase font-bold block">Nama Lengkap Barang</span>
+                <span className="font-bold text-[#123B66] text-sm">
+                  {selectedDetailItem.materialName || selectedDetailItem.itemName}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-100">
+                  <span className="text-[10px] text-[#64748B] uppercase font-bold block">Saldo Fisik</span>
+                  <span className="text-lg font-mono font-extrabold text-[#123B66]">
+                    {selectedDetailItem.availableStock}
+                  </span>
+                  <span className="text-[10px] text-[#64748B] block">{selectedDetailItem.unit}</span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-[#D9E2EF]">
+                  <span className="text-[10px] text-[#64748B] uppercase font-bold block">Stok Min</span>
+                  <span className="text-lg font-mono font-bold text-[#1F2937]">
+                    {selectedDetailItem.minimumStock}
+                  </span>
+                  <span className="text-[10px] text-[#64748B] block">{selectedDetailItem.unit}</span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-[#D9E2EF]">
+                  <span className="text-[10px] text-[#64748B] uppercase font-bold block">ROP</span>
+                  <span className="text-lg font-mono font-bold text-[#1F2937]">
+                    {selectedDetailItem.reorderPoint}
+                  </span>
+                  <span className="text-[10px] text-[#64748B] block">{selectedDetailItem.unit}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#D9E2EF]">
+              <button
+                onClick={() => {
+                  setSelectedDetailItem(null);
+                  setActiveNav('Kartu Stok');
+                }}
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs shadow-sm transition flex items-center gap-1.5"
+              >
+                <FileText className="w-4 h-4" />
+                <span>Lihat Kartu Stok</span>
+              </button>
+              <button
+                onClick={() => setSelectedDetailItem(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#1F2937] font-semibold text-xs transition"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

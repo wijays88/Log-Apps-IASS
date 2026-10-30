@@ -32,6 +32,7 @@ export const StockOpname: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [rejectModalId, setRejectModalId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -147,7 +148,7 @@ export const StockOpname: React.FC = () => {
           ) : (
             <button
               onClick={handleOpenModal}
-              className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-2"
+              className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />
               <span>Input Hasil Opname</span>
@@ -452,9 +453,10 @@ export const StockOpname: React.FC = () => {
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46]"
+                disabled={isSubmitting}
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition disabled:opacity-50"
               >
-                Simpan Hasil Opname
+                {isSubmitting ? 'Menyimpan...' : 'Simpan Hasil Opname'}
               </button>
             </div>
           </form>

@@ -166,7 +166,7 @@ export const Laporan: React.FC = () => {
           </button>
           <button
             onClick={handleExportCSV}
-            className="px-3.5 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-1.5"
+            className="px-3.5 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-1.5"
           >
             <Download className="w-4 h-4" />
             <span>Ekspor CSV</span>

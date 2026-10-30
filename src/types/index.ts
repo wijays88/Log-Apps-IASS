@@ -63,7 +63,10 @@ export interface MaterialMaster {
   id: string;
   materialId: string;
   materialCode: string;
+  itemCode?: string; // backward-compatible alias
   materialName: string;
+  name?: string; // backward-compatible alias
+  itemName?: string; // backward-compatible alias
   categoryId: string;
   categoryName: string;
   subcategoryId?: string;
@@ -78,6 +81,7 @@ export interface MaterialMaster {
   variantType?: 'NONE' | 'SIZE' | 'SPECIFICATION';
   variantValue?: string; // 'S', 'M', 'L', 'XL', 'XXL' or '40x50', '60x100', '90x120'
   unitCost?: number;
+  unitPrice?: number; // backward-compatible alias
   isActive: boolean;
   createdAt: string;
   createdBy: string;

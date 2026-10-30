@@ -5,8 +5,13 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 
-// CRITICAL: Must use firestoreDatabaseId from firebase-applet-config.json
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Initialize Firestore: Use named database if specified and not '(default)', otherwise default instance
+const firestoreDbId =
+  firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
+    ? firebaseConfig.firestoreDatabaseId
+    : undefined;
+
+export const db = firestoreDbId ? getFirestore(app, firestoreDbId) : getFirestore(app);
 export const auth = getAuth(app);
 
 export enum OperationType {

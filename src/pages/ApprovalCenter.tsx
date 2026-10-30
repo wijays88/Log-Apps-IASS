@@ -275,7 +275,7 @@ export const ApprovalCenter: React.FC = () => {
                         <>
                           <button
                             onClick={() => handleStartApprove(app)}
-                            className="w-full sm:w-36 py-2 px-3 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white text-xs font-bold shadow-2xs transition flex items-center justify-center gap-1.5"
+                            className="w-full sm:w-36 py-2 px-3 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white text-xs font-bold shadow-2xs transition flex items-center justify-center gap-1.5"
                           >
                             <Check className="w-4 h-4" />
                             <span>Setujui</span>
@@ -369,7 +369,7 @@ export const ApprovalCenter: React.FC = () => {
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46]"
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition shadow-2xs"
               >
                 Otorisasi & Kurangi Stok
               </button>

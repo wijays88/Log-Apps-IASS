@@ -167,7 +167,7 @@ export const TransferStok: React.FC = () => {
           ) : (
             <button
               onClick={handleOpenModal}
-              className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-2"
+              className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />
               <span>Kirim Transfer Baru</span>
@@ -463,10 +463,10 @@ export const TransferStok: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={!selectedItem || formData.quantity > selectedItem.availableStock}
-                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46] disabled:opacity-50"
+                disabled={!selectedItem || formData.quantity > selectedItem.availableStock || isSubmitting}
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] disabled:opacity-50 transition"
               >
-                Kirim Transfer (In-Transit)
+                {isSubmitting ? 'Mengirim...' : 'Kirim Transfer (In-Transit)'}
               </button>
             </div>
           </form>

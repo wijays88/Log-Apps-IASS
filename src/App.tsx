@@ -14,6 +14,7 @@ import { StockOpname } from './pages/StockOpname';
 import { ApprovalCenter } from './pages/ApprovalCenter';
 import { Laporan } from './pages/Laporan';
 import { MasterData } from './pages/MasterData';
+import { KartuStok } from './pages/KartuStok';
 import { AccountManagement } from './pages/AccountManagement';
 import { AuditTrail } from './pages/AuditTrail';
 import { ProfilAkun } from './pages/ProfilAkun';
@@ -30,18 +31,18 @@ const MainLayout: React.FC = () => {
   const [globalExcelModalOpen, setGlobalExcelModalOpen] = useState(false);
   const [globalExcelModule, setGlobalExcelModule] = useState<ImportModuleType>('MATERIAL_MASTER');
 
-  // Display clean enterprise loading screen while Firebase verifies active session
+  // Display clean enterprise loading screen in Blue Corporate Theme
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white select-none">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center font-bold text-2xl shadow-xl shadow-emerald-900/40 mb-5">
+      <div className="min-h-screen bg-[#123B66] flex flex-col items-center justify-center p-6 text-white select-none">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#1F5FAF] to-[#3182CE] flex items-center justify-center font-bold text-2xl shadow-xl shadow-[#123B66]/60 mb-5">
           IAS
         </div>
-        <div className="flex items-center gap-2.5 text-emerald-400 font-medium text-sm mb-2">
-          <Loader2 className="w-4 h-4 animate-spin" />
+        <div className="flex items-center gap-2.5 text-[#EFF6FF] font-medium text-sm mb-2">
+          <Loader2 className="w-4 h-4 animate-spin text-[#3182CE]" />
           <span>Memverifikasi Sesi Autentikasi...</span>
         </div>
-        <p className="text-xs text-slate-400 font-mono">
+        <p className="text-xs text-[#EFF6FF]/70 font-mono">
           PT IAS SUPPORT — LOGISTICS CONTROL TOWER
         </p>
       </div>
@@ -57,6 +58,8 @@ const MainLayout: React.FC = () => {
     switch (activeNav) {
       case 'Dashboard':
         return <Dashboard />;
+      case 'Kartu Stok':
+        return <KartuStok />;
       case 'Posisi Persediaan':
         return <PosisiPersediaan />;
       case 'Barang Masuk':

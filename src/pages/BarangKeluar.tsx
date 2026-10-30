@@ -185,7 +185,7 @@ export const BarangKeluar: React.FC = () => {
           ) : (
             <button
               onClick={handleOpenModal}
-              className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-2"
+              className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />
               <span>Buat Permohonan Keluar</span>
@@ -516,10 +516,10 @@ export const BarangKeluar: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={items.length === 0 || !selectedItemData || formData.requestedQuantity > selectedItemData.availableStock}
-                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46] disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={items.length === 0 || !selectedItemData || formData.requestedQuantity > selectedItemData.availableStock || isSubmitting}
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
-                Kirim Permohonan Keluar
+                {isSubmitting ? 'Mengirim...' : 'Kirim Permohonan Keluar'}
               </button>
             </div>
           </form>

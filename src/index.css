@@ -2,13 +2,20 @@
 
 @layer base {
   :root {
-    --primary-green: #064e3b;
-    --primary-green-light: #065f46;
-    --accent-emerald: #10b981;
-    --accent-emerald-dark: #059669;
+    --navy-blue: #123B66;
+    --corporate-blue: #1F5FAF;
+    --accent-blue: #3182CE;
+    --light-blue: #EFF6FF;
+    --main-bg: #F7F9FC;
+    --card-surface: #FFFFFF;
+    --primary-text: #1F2937;
+    --secondary-text: #64748B;
+    --border-color: #D9E2EF;
   }
 
   body {
+    background-color: #F7F9FC;
+    color: #1F2937;
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
 

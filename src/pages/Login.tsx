@@ -12,7 +12,6 @@ import {
   KeyRound,
   CheckCircle2,
   UserPlus,
-  HelpCircle,
   LogIn,
 } from 'lucide-react';
 
@@ -108,25 +107,34 @@ export const Login: React.FC = () => {
       regPassword,
       regFullName.trim(),
       regEmployeeId.trim().toUpperCase(),
-      regLocation
+      regLocation.trim()
     );
 
-    setIsLoading(false);
-    if (!result.success) {
-      setErrorMessage(result.message || 'Pendaftaran akun gagal. Silakan coba kembali.');
+    if (result.success) {
+      setSuccessMessage('Registrasi personil berhasil! Anda dapat langsung masuk dengan email & sandi.');
+      setActiveTab('LOGIN');
+      setLoginEmail(regEmail);
     } else {
-      setSuccessMessage('Akun staf berhasil didaftarkan! Mengalihkan ke sistem...');
+      setErrorMessage(result.message || 'Gagal mendaftar. Silakan gunakan email lain atau periksa koneksi.');
     }
+    setIsLoading(false);
   };
 
   const handleForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
-    setIsLoading(true);
 
-    const result = await resetPassword(forgotEmail.trim());
+    const emailTrimmed = forgotEmail.trim();
+    if (!emailTrimmed) {
+      setErrorMessage('Silakan masukkan email terdaftar untuk menerima tautan reset kata sandi.');
+      return;
+    }
+
+    setIsLoading(true);
+    const result = await resetPassword(emailTrimmed);
     setIsLoading(false);
+
     if (result.success) {
       setSuccessMessage('Tautan pemulihan kata sandi telah dikirim ke email Anda. Silakan periksa kotak masuk.');
     } else {
@@ -135,10 +143,10 @@ export const Login: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col justify-center items-center p-4 selection:bg-emerald-600 selection:text-white">
-      <div className="max-w-md w-full bg-white rounded-3xl shadow-xl border border-slate-200/80 overflow-hidden">
-        {/* Brand Header */}
-        <div className="bg-[#064e3b] p-6 sm:p-7 text-white text-center relative overflow-hidden">
+    <div className="min-h-screen bg-[#F7F9FC] flex flex-col justify-center items-center p-4 selection:bg-[#1F5FAF] selection:text-white">
+      <div className="max-w-md w-full bg-white rounded-3xl shadow-xl border border-[#D9E2EF] overflow-hidden">
+        {/* Brand Header - Blue Corporate Theme */}
+        <div className="bg-gradient-to-br from-[#123B66] to-[#1F5FAF] p-6 sm:p-7 text-white text-center relative overflow-hidden">
           <div className="relative z-10 flex flex-col items-center">
             <div className="w-12 h-12 rounded-2xl bg-white/10 backdrop-blur-xs border border-white/20 text-white flex items-center justify-center font-extrabold text-xl shadow-inner mb-3">
               IAS
@@ -146,29 +154,29 @@ export const Login: React.FC = () => {
             <h1 className="text-lg font-extrabold tracking-tight">
               PT IAS SUPPORT
             </h1>
-            <p className="text-xs font-bold text-emerald-200 uppercase tracking-widest mt-0.5">
+            <p className="text-xs font-bold text-[#EFF6FF] uppercase tracking-widest mt-0.5">
               LOGISTICS CONTROL TOWER
             </p>
-            <p className="text-[11px] text-emerald-100/80 mt-1">
+            <p className="text-[11px] text-[#EFF6FF]/80 mt-1">
               Sistem Manajemen Inventaris & Logistik Terpadu
             </p>
           </div>
 
-          <div className="absolute -top-12 -right-12 w-36 h-36 rounded-full bg-emerald-400/20 blur-xl pointer-events-none" />
+          <div className="absolute -top-12 -right-12 w-36 h-36 rounded-full bg-white/10 blur-xl pointer-events-none" />
         </div>
 
         {/* Tab Selector */}
-        <div className="flex border-b border-slate-100 text-xs font-semibold bg-slate-50">
+        <div className="flex border-b border-[#D9E2EF] text-xs font-semibold bg-[#F7F9FC]">
           <button
             type="button"
             onClick={() => handleSwitchTab('LOGIN')}
             className={`flex-1 py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
               activeTab === 'LOGIN'
-                ? 'border-[#064e3b] text-[#064e3b] bg-white font-bold'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
+                ? 'border-[#1F5FAF] text-[#123B66] bg-white font-bold'
+                : 'border-transparent text-[#64748B] hover:text-[#1F2937]'
             }`}
           >
-            <LogIn className="w-3.5 h-3.5" />
+            <LogIn className="w-3.5 h-3.5 text-[#1F5FAF]" />
             <span>Masuk</span>
           </button>
           <button
@@ -176,11 +184,11 @@ export const Login: React.FC = () => {
             onClick={() => handleSwitchTab('REGISTER')}
             className={`flex-1 py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
               activeTab === 'REGISTER'
-                ? 'border-[#064e3b] text-[#064e3b] bg-white font-bold'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
+                ? 'border-[#1F5FAF] text-[#123B66] bg-white font-bold'
+                : 'border-transparent text-[#64748B] hover:text-[#1F2937]'
             }`}
           >
-            <UserPlus className="w-3.5 h-3.5" />
+            <UserPlus className="w-3.5 h-3.5 text-[#1F5FAF]" />
             <span>Daftar Staf</span>
           </button>
           <button
@@ -188,11 +196,11 @@ export const Login: React.FC = () => {
             onClick={() => handleSwitchTab('FORGOT')}
             className={`flex-1 py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
               activeTab === 'FORGOT'
-                ? 'border-[#064e3b] text-[#064e3b] bg-white font-bold'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
+                ? 'border-[#1F5FAF] text-[#123B66] bg-white font-bold'
+                : 'border-transparent text-[#64748B] hover:text-[#1F2937]'
             }`}
           >
-            <KeyRound className="w-3.5 h-3.5" />
+            <KeyRound className="w-3.5 h-3.5 text-[#1F5FAF]" />
             <span>Reset Sandi</span>
           </button>
         </div>
@@ -208,8 +216,8 @@ export const Login: React.FC = () => {
           )}
 
           {successMessage && (
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-start gap-2 animate-in fade-in">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-[#123B66] text-xs flex items-start gap-2 animate-in fade-in">
+              <CheckCircle2 className="w-4 h-4 text-[#1F5FAF] shrink-0 mt-0.5" />
               <span className="leading-snug">{successMessage}</span>
             </div>
           )}
@@ -218,49 +226,49 @@ export const Login: React.FC = () => {
           {activeTab === 'LOGIN' && (
             <form onSubmit={handleLoginSubmit} className="space-y-4 text-xs">
               <div>
-                <label className="text-slate-700 block mb-1 font-semibold">
+                <label className="text-[#1F2937] block mb-1 font-semibold">
                   Email Perusahaan / Employee ID
                 </label>
                 <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                  <Mail className="w-4 h-4 absolute left-3 top-3 text-[#64748B]" />
                   <input
                     type="text"
                     required
                     placeholder="nama@pt-iassupport.co.id atau EMP-001"
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-medium"
+                    className="w-full pl-9 pr-3 py-2.5 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-medium"
                   />
                 </div>
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="text-slate-700 font-semibold">
+                  <label className="text-[#1F2937] font-semibold">
                     Kata Sandi
                   </label>
                   <button
                     type="button"
                     onClick={() => handleSwitchTab('FORGOT')}
-                    className="text-[11px] text-[#064e3b] hover:underline"
+                    className="text-[11px] text-[#1F5FAF] hover:underline"
                   >
                     Lupa sandi?
                   </button>
                 </div>
                 <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                  <Lock className="w-4 h-4 absolute left-3 top-3 text-[#64748B]" />
                   <input
                     type={showPassword ? 'text' : 'password'}
                     required
                     placeholder="Masukkan kata sandi terdaftar"
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
-                    className="w-full pl-9 pr-10 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-medium"
+                    className="w-full pl-9 pr-10 py-2.5 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-medium"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
+                    className="absolute right-3 top-2.5 text-[#64748B] hover:text-[#1F2937]"
                     aria-label="Toggle password visibility"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -271,7 +279,7 @@ export const Login: React.FC = () => {
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-2 mt-2 disabled:opacity-60"
+                className="w-full py-2.5 px-4 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-2 mt-2 disabled:opacity-60"
               >
                 <span>{isLoading ? 'Memverifikasi Kredensial...' : 'Masuk ke Sistem'}</span>
                 <ArrowRight className="w-4 h-4" />
@@ -279,10 +287,10 @@ export const Login: React.FC = () => {
 
               <div className="relative my-3">
                 <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-slate-200" />
+                  <div className="w-full border-t border-[#D9E2EF]" />
                 </div>
                 <div className="relative flex justify-center text-[10px] uppercase">
-                  <span className="bg-white px-2 text-slate-400">Atau Autentikasi SSO</span>
+                  <span className="bg-white px-2 text-[#64748B]">Atau Autentikasi SSO</span>
                 </div>
               </div>
 
@@ -290,7 +298,7 @@ export const Login: React.FC = () => {
                 type="button"
                 onClick={handleGoogleLogin}
                 disabled={isLoading}
-                className="w-full py-2.5 px-4 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs shadow-2xs transition flex items-center justify-center gap-2 disabled:opacity-60"
+                className="w-full py-2.5 px-4 rounded-xl border border-[#D9E2EF] bg-white hover:bg-[#F7F9FC] text-[#1F2937] font-bold text-xs shadow-2xs transition flex items-center justify-center gap-2 disabled:opacity-60"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24">
                   <path
@@ -319,25 +327,25 @@ export const Login: React.FC = () => {
           {activeTab === 'REGISTER' && (
             <form onSubmit={handleRegisterSubmit} className="space-y-3 text-xs">
               <div>
-                <label className="text-slate-700 block mb-1 font-semibold">
+                <label className="text-[#1F2937] block mb-1 font-semibold">
                   Nama Lengkap Personil
                 </label>
                 <div className="relative">
-                  <User className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <User className="w-4 h-4 absolute left-3 top-2.5 text-[#64748B]" />
                   <input
                     type="text"
                     required
                     placeholder="Contoh: Budi Santoso"
                     value={regFullName}
                     onChange={(e) => setRegFullName(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-medium"
+                    className="w-full pl-9 pr-3 py-2 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-medium"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-slate-700 block mb-1 font-semibold">
+                  <label className="text-[#1F2937] block mb-1 font-semibold">
                     Employee ID
                   </label>
                   <input
@@ -346,12 +354,12 @@ export const Login: React.FC = () => {
                     placeholder="EMP-101"
                     value={regEmployeeId}
                     onChange={(e) => setRegEmployeeId(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-mono uppercase font-medium"
+                    className="w-full px-3 py-2 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-mono uppercase font-medium"
                   />
                 </div>
 
                 <div>
-                  <label className="text-slate-700 block mb-1 font-semibold">
+                  <label className="text-[#1F2937] block mb-1 font-semibold">
                     Lokasi Kerja
                   </label>
                   <input
@@ -360,31 +368,31 @@ export const Login: React.FC = () => {
                     placeholder="Gudang Utama CGK"
                     value={regLocation}
                     onChange={(e) => setRegLocation(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-medium"
+                    className="w-full px-3 py-2 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-medium"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="text-slate-700 block mb-1 font-semibold">
+                <label className="text-[#1F2937] block mb-1 font-semibold">
                   Email Perusahaan
                 </label>
                 <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-[#64748B]" />
                   <input
                     type="email"
                     required
                     placeholder="staf@pt-iassupport.co.id"
                     value={regEmail}
                     onChange={(e) => setRegEmail(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-medium"
+                    className="w-full pl-9 pr-3 py-2 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-medium"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-slate-700 block mb-1 font-semibold">
+                  <label className="text-[#1F2937] block mb-1 font-semibold">
                     Kata Sandi
                   </label>
                   <input
@@ -394,12 +402,12 @@ export const Login: React.FC = () => {
                     placeholder="Min. 6 karakter"
                     value={regPassword}
                     onChange={(e) => setRegPassword(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-medium"
+                    className="w-full px-3 py-2 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-medium"
                   />
                 </div>
 
                 <div>
-                  <label className="text-slate-700 block mb-1 font-semibold">
+                  <label className="text-[#1F2937] block mb-1 font-semibold">
                     Konfirmasi Sandi
                   </label>
                   <input
@@ -409,19 +417,19 @@ export const Login: React.FC = () => {
                     placeholder="Ulangi sandi"
                     value={regConfirmPassword}
                     onChange={(e) => setRegConfirmPassword(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-medium"
+                    className="w-full px-3 py-2 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-medium"
                   />
                 </div>
               </div>
 
-              <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-900 leading-relaxed">
+              <div className="p-2.5 bg-[#EFF6FF] rounded-xl border border-[#D9E2EF] text-[11px] text-[#123B66] leading-relaxed">
                 Pendaftaran baru secara default diberikan peran <strong>LOGISTIK</strong>. Hak akses Administrator diberikan secara terpisah oleh Administrator melalui konsol manajemen.
               </div>
 
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-2 mt-2 disabled:opacity-60"
+                className="w-full py-2.5 px-4 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-2 mt-2 disabled:opacity-60"
               >
                 <span>{isLoading ? 'Mendaftarkan Akun...' : 'Daftar Akun Baru'}</span>
                 <ArrowRight className="w-4 h-4" />
@@ -432,23 +440,23 @@ export const Login: React.FC = () => {
           {/* TAB 3: FORGOT PASSWORD FORM */}
           {activeTab === 'FORGOT' && (
             <form onSubmit={handleForgotSubmit} className="space-y-4 text-xs">
-              <p className="text-slate-600 text-xs leading-relaxed">
+              <p className="text-[#64748B] text-xs leading-relaxed">
                 Masukkan alamat email resmi Anda. Kami akan mengirimkan tautan aman untuk menyetel ulang kata sandi melalui Firebase Authentication.
               </p>
 
               <div>
-                <label className="text-slate-700 block mb-1 font-semibold">
+                <label className="text-[#1F2937] block mb-1 font-semibold">
                   Email Perusahaan
                 </label>
                 <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                  <Mail className="w-4 h-4 absolute left-3 top-3 text-[#64748B]" />
                   <input
                     type="email"
                     required
                     placeholder="nama@pt-iassupport.co.id"
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-xs font-medium"
+                    className="w-full pl-9 pr-3 py-2.5 bg-[#F7F9FC] border border-[#D9E2EF] rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-[#1F5FAF] text-xs font-medium"
                   />
                 </div>
               </div>
@@ -456,7 +464,7 @@ export const Login: React.FC = () => {
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-60"
+                className="w-full py-2.5 px-4 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-60"
               >
                 <span>{isLoading ? 'Mengirim Tautan...' : 'Kirim Tautan Reset Sandi'}</span>
                 <ArrowRight className="w-4 h-4" />
@@ -465,7 +473,7 @@ export const Login: React.FC = () => {
               <button
                 type="button"
                 onClick={() => handleSwitchTab('LOGIN')}
-                className="w-full py-2 text-center text-xs text-slate-600 hover:text-slate-900 font-semibold"
+                className="w-full py-2 text-center text-xs text-[#64748B] hover:text-[#1F2937] font-semibold"
               >
                 Kembali ke Halaman Masuk
               </button>
@@ -473,20 +481,20 @@ export const Login: React.FC = () => {
           )}
 
           {/* Security & Admin Provisioning Notice */}
-          <div className="pt-3 border-t border-slate-100 text-[11px] text-slate-500 space-y-1.5">
-            <div className="flex items-center gap-1.5 font-bold text-slate-700">
-              <Building2 className="w-3.5 h-3.5 text-[#064e3b]" />
+          <div className="pt-3 border-t border-[#D9E2EF] text-[11px] text-[#64748B] space-y-1.5">
+            <div className="flex items-center gap-1.5 font-bold text-[#123B66]">
+              <Building2 className="w-3.5 h-3.5 text-[#1F5FAF]" />
               <span>Otorisasi & Keamanan Multi-Peran PT IAS</span>
             </div>
             <p className="leading-relaxed">
-              Autentikasi diamankan melalui enkripsi Firebase. Sesi tidak otomatis masuk ke akun Admin. Administrator pertama diotorisasi melalui konfigurasi Firebase Console atau email pemilik terdaftar.
+              Autentikasi diamankan melalui enkripsi Firebase. Sesi tidak otomatis masuk ke akun Admin. Administrator diotorisasi melalui kredensial terdaftar di Cloud Firestore.
             </p>
           </div>
         </div>
 
         {/* Footer */}
-        <div className="p-3.5 bg-slate-50 border-t border-slate-100 text-center text-[10px] text-slate-400 font-mono">
-          PT IAS Support • Logistics Control Tower v3.0 • Cloud Firestore Secured
+        <div className="p-3.5 bg-[#F7F9FC] border-t border-[#D9E2EF] text-center text-[10px] text-[#64748B] font-mono">
+          PT IAS Support • Logistics Control Tower • Cloud Firestore Secured
         </div>
       </div>
     </div>

@@ -172,9 +172,29 @@ export function exportToExcelFile(
 }
 
 /**
- * Export data array to CSV file
+ * Export data array or headers/rows to CSV file
  */
-export function exportToCsvFile(data: Record<string, any>[], fileName: string): void {
+export function exportToCsvFile(
+  dataOrFilename: Record<string, any>[] | string,
+  fileNameOrHeaders?: string | string[],
+  rows?: (string | number)[][]
+): void {
+  if (typeof dataOrFilename === 'string' && Array.isArray(fileNameOrHeaders) && Array.isArray(rows)) {
+    const filename = dataOrFilename;
+    const headers = fileNameOrHeaders;
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', filename.endsWith('.csv') ? filename : `${filename}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return;
+  }
+
+  const data = Array.isArray(dataOrFilename) ? dataOrFilename : [];
+  const fileName = typeof fileNameOrHeaders === 'string' ? fileNameOrHeaders : 'export.csv';
   const worksheet = XLSX.utils.json_to_sheet(data);
   const csvOutput = XLSX.utils.sheet_to_csv(worksheet);
 

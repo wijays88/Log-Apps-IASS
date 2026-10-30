@@ -863,7 +863,7 @@ export const MasterData: React.FC = () => {
               }}
               className={`flex items-center gap-2 px-3.5 py-2.5 font-bold rounded-t-xl transition whitespace-nowrap border-b-2 ${
                 isActive
-                  ? 'border-[#064e3b] text-[#064e3b] bg-emerald-50/50'
+                  ? 'border-[#1F5FAF] text-[#123B66] bg-[#EFF6FF]'
                   : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
               }`}
             >
@@ -966,7 +966,7 @@ export const MasterData: React.FC = () => {
                 {canManage && (
                   <button
                     onClick={handleOpenAddMaterial}
-                    className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-2xs transition flex items-center gap-1.5"
+                    className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs shadow-2xs transition flex items-center gap-1.5"
                   >
                     <Plus className="w-4 h-4" />
                     <span>Tambah Material</span>
@@ -1199,7 +1199,7 @@ export const MasterData: React.FC = () => {
                 {canManage && (
                   <button
                     onClick={handleOpenAddLocation}
-                    className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-2xs transition flex items-center gap-1.5"
+                    className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs shadow-2xs transition flex items-center gap-1.5"
                   >
                     <Plus className="w-4 h-4" />
                     <span>Tambah Lokasi</span>
@@ -1466,7 +1466,7 @@ export const MasterData: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleOpenAddReqUnit}
-                    className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-2xs flex items-center gap-1.5 transition"
+                    className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs shadow-2xs flex items-center gap-1.5 transition"
                   >
                     <Plus className="w-4 h-4" />
                     <span>Tambah Unit Pemohon</span>
@@ -1943,7 +1943,7 @@ export const MasterData: React.FC = () => {
               <button
                 type="submit"
                 disabled={isSubmittingMat}
-                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
               >
                 {isSubmittingMat ? (
                   <>
@@ -2091,7 +2091,7 @@ export const MasterData: React.FC = () => {
               <button
                 type="submit"
                 disabled={isSubmittingLoc}
-                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
               >
                 {isSubmittingLoc ? (
                   <>
@@ -2527,7 +2527,7 @@ export const MasterData: React.FC = () => {
               <button
                 type="submit"
                 disabled={isSubmittingReq}
-                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold shadow-2xs transition flex items-center gap-1.5 disabled:opacity-50"
               >
                 {isSubmittingReq ? (
                   <>
@@ -2879,7 +2879,7 @@ export const MasterData: React.FC = () => {
               <button
                 type="submit"
                 disabled={isSubmittingSup}
-                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold transition flex items-center gap-1.5"
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold transition flex items-center gap-1.5"
               >
                 {isSubmittingSup ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Simpan Pemasok</span>}
               </button>

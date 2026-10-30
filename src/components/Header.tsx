@@ -12,6 +12,7 @@ import {
   Menu,
   CheckCircle2,
   RefreshCw,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { UserRole } from '../types';
 
@@ -48,184 +49,163 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileSidebar, onOpenExc
 
   const pendingCount = approvals.filter((a) => a.status === 'PENDING').length;
 
-  const getRoleBadgeStyle = (role?: UserRole) => {
-    switch (role) {
-      case 'ADMIN':
-        return 'bg-emerald-900 text-emerald-100 border-emerald-700';
-      case 'SITE HEAD':
-        return 'bg-amber-100 text-amber-900 border-amber-300';
-      case 'LOGISTIK':
-      default:
-        return 'bg-emerald-100 text-emerald-800 border-emerald-300';
-    }
-  };
-
   return (
-    <header className="sticky top-0 z-30 bg-white border-b border-slate-200/80 shadow-xs">
+    <header className="sticky top-0 z-30 bg-white border-b border-[#D9E2EF] shadow-2xs">
       <div className="flex items-center justify-between px-3 sm:px-6 py-2.5 sm:py-3 gap-3">
         {/* Left: Mobile Toggle & Brand / Breadcrumb */}
         <div className="flex items-center gap-3">
           <button
             onClick={onToggleMobileSidebar}
-            className="lg:hidden p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
+            className="lg:hidden p-2 text-[#64748B] hover:text-[#123B66] hover:bg-[#EFF6FF] rounded-lg transition"
             aria-label="Toggle Navigation"
           >
             <Menu className="w-5 h-5" />
           </button>
 
           <div className="flex items-center gap-2.5">
-            {/* Monogram brand icon */}
-            <div className="w-8 h-8 rounded-lg bg-[#064e3b] text-white flex items-center justify-center font-bold text-xs shadow-sm tracking-tight">
+            {/* Monogram brand icon in Corporate Blue */}
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#123B66] to-[#1F5FAF] text-white flex items-center justify-center font-bold text-xs shadow-sm tracking-tight">
               IAS
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-extrabold text-slate-900 tracking-tight text-sm sm:text-base leading-none">
+                <span className="font-extrabold text-[#123B66] tracking-tight text-sm sm:text-base leading-none">
                   PT IAS SUPPORT
                 </span>
-                <span className="hidden md:inline-block px-1.5 py-0.5 text-[10px] font-semibold tracking-wider bg-emerald-100 text-emerald-800 rounded uppercase">
-                  Logistics Control Tower
+                <span className="hidden md:inline-block px-1.5 py-0.5 text-[10px] font-bold tracking-wider bg-[#EFF6FF] text-[#1F5FAF] border border-[#D9E2EF] rounded uppercase">
+                  Control Tower
                 </span>
               </div>
-              <div className="text-[11px] text-slate-500 font-medium hidden sm:block">
-                Menara Kontrol Logistik & Pergudangan Terpadu
+              <div className="text-[11px] text-[#64748B] font-medium hidden sm:block">
+                Sistem Manajemen Inventaris & Logistik Terpadu
               </div>
             </div>
           </div>
         </div>
 
-        {/* Center / Right tools: Realtime clock, Location, Pending approvals, Role Switcher */}
+        {/* Center / Right tools: Realtime clock, Location, Role, Excel Hub, Profile */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* Timezone badge */}
-          <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono text-slate-600 bg-slate-100/80 border border-slate-200 rounded-lg">
-            <Clock className="w-3.5 h-3.5 text-emerald-700" />
-            <span>{currentTime || 'Memuat waktu Asia/Jakarta...'}</span>
+          <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono text-[#1F2937] bg-[#F7F9FC] border border-[#D9E2EF] rounded-lg">
+            <Clock className="w-3.5 h-3.5 text-[#1F5FAF]" />
+            <span>{currentTime || 'WIB'}</span>
           </div>
 
           {/* Location Badge */}
-          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg">
-            <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 text-xs text-[#1F2937] bg-[#F7F9FC] border border-[#D9E2EF] rounded-lg">
+            <MapPin className="w-3.5 h-3.5 text-[#3182CE]" />
             <span className="font-medium max-w-[130px] truncate" title={currentUser?.authorizedLocation}>
               {currentUser?.authorizedLocation || 'Semua Lokasi'}
             </span>
           </div>
 
-          {/* Authenticated Role Badge (Enforced from Firestore, immutable) */}
+          {/* Authenticated Role Badge (Enforced from Firestore) */}
           <div
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg shadow-2xs border select-none"
             style={{
               backgroundColor:
                 currentUser?.role === 'ADMIN'
-                  ? '#064e3b'
+                  ? '#123B66'
                   : currentUser?.role === 'SITE HEAD'
-                  ? '#78350f'
-                  : '#047857',
+                  ? '#1E3A8A'
+                  : '#1F5FAF',
               color: '#ffffff',
               borderColor: 'transparent',
             }}
             title={`Peran Pengguna Terverifikasi: ${currentUser?.role || 'LOGISTIK'}`}
           >
-            <Shield className="w-3.5 h-3.5 text-emerald-200" />
-            <span className="hidden xs:inline text-emerald-100/90 font-medium">Peran:</span>
+            <Shield className="w-3.5 h-3.5 text-[#EFF6FF]" />
+            <span className="hidden xs:inline text-[#EFF6FF]/80 font-medium">Peran:</span>
             <span className="uppercase font-bold tracking-wide">{currentUser?.role || 'LOGISTIK'}</span>
           </div>
 
-          {/* Universal Excel Hub Trigger */}
+          {/* Universal Excel Hub Trigger in Corporate Blue */}
           <button
             onClick={() => onOpenExcelModal ? onOpenExcelModal('MATERIAL_MASTER') : setActiveNav('Master Data')}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition shadow-2xs"
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg bg-[#EFF6FF] text-[#1F5FAF] border border-[#D9E2EF] hover:bg-blue-100/80 transition shadow-2xs"
             title="Pusat Integrasi Import / Export Excel (.xlsx / .csv)"
           >
-            <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+            <FileSpreadsheet className="w-3.5 h-3.5 text-[#1F5FAF]" />
             <span className="hidden sm:inline">Excel Hub</span>
           </button>
 
-          {/* Approval Notification Bell */}
-          <button
-            onClick={() => setActiveNav('Approval Center')}
-            className="relative p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
-            title={`${pendingCount} Transaksi Menunggu Persetujuan`}
-          >
-            <Bell className="w-4 h-4" />
-            {pendingCount > 0 && (
-              <span className="absolute top-1.5 right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-rose-600 text-[10px] font-bold text-white shadow-xs animate-pulse">
-                {pendingCount}
-              </span>
-            )}
-          </button>
-
-          {/* User Profile Pill & Dropdown */}
+          {/* User Profile Dropdown Trigger */}
           <div className="relative">
             <button
               onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
-              className="flex items-center gap-2 p-1 sm:px-2.5 sm:py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 transition"
+              className="flex items-center gap-2 p-1.5 pl-2 rounded-xl border border-[#D9E2EF] hover:bg-[#F7F9FC] transition shadow-2xs group"
+              aria-expanded={profileDropdownOpen}
+              aria-label="Menu Pengguna"
             >
-              <div className="w-7 h-7 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center font-bold text-xs uppercase border border-slate-300">
-                {currentUser?.fullName.charAt(0) || 'U'}
+              <div className="w-7 h-7 rounded-lg bg-[#123B66] text-white flex items-center justify-center font-bold text-xs">
+                {currentUser?.fullName ? currentUser.fullName.charAt(0).toUpperCase() : 'U'}
               </div>
-              <div className="hidden sm:block text-left text-xs">
-                <div className="font-bold text-slate-800 leading-tight max-w-[120px] truncate">
-                  {currentUser?.fullName}
-                </div>
-                <div className="text-[10px] text-slate-500 font-mono leading-tight">
-                  {currentUser?.employeeId}
-                </div>
+              <div className="hidden sm:flex flex-col text-left">
+                <span className="text-xs font-bold text-[#1F2937] leading-tight max-w-[110px] truncate">
+                  {currentUser?.fullName || 'Pengguna'}
+                </span>
+                <span className="text-[10px] text-[#64748B] font-mono leading-tight">
+                  {currentUser?.employeeId || 'ID'}
+                </span>
               </div>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+              <ChevronDown className="w-3.5 h-3.5 text-[#64748B] group-hover:text-[#123B66] transition-transform duration-200" />
             </button>
 
+            {/* Profile Dropdown Menu */}
             {profileDropdownOpen && (
               <div
-                className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-xl border border-slate-200 p-2 z-50 text-xs animate-in fade-in"
+                className="absolute right-0 mt-2 w-64 bg-white rounded-2xl shadow-xl border border-[#D9E2EF] py-2 z-50 animate-in fade-in zoom-in-95 duration-100"
                 onClick={() => setProfileDropdownOpen(false)}
               >
-                <div className="px-3 py-2 border-b border-slate-100">
-                  <div className="font-bold text-slate-900 truncate">{currentUser?.fullName}</div>
-                  <div className="text-slate-500 font-mono text-[11px] truncate">{currentUser?.email}</div>
-                  <div className="mt-1.5">
-                    <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold uppercase border ${getRoleBadgeStyle(currentUser?.role)}`}>
+                <div className="px-4 py-2.5 border-b border-[#D9E2EF] bg-[#F7F9FC]">
+                  <p className="text-xs font-bold text-[#1F2937] truncate">{currentUser?.fullName}</p>
+                  <p className="text-[11px] text-[#64748B] truncate font-mono">{currentUser?.email}</p>
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#EFF6FF] text-[#1F5FAF] uppercase border border-[#D9E2EF]">
                       {currentUser?.role}
                     </span>
+                    <span className="text-[10px] text-[#64748B]">{currentUser?.employeeId}</span>
                   </div>
                 </div>
 
-                <div className="mt-1 space-y-0.5">
+                <div className="py-1">
                   <button
                     onClick={() => setActiveNav('Profil Akun')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-50 rounded-lg transition"
+                    className="w-full px-4 py-2 text-left text-xs text-[#1F2937] hover:bg-[#EFF6FF] flex items-center gap-2 font-medium"
                   >
-                    <User className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Profil Akun Saya</span>
-                  </button>
-
-                  <button
-                    onClick={() => setActiveNav('Pengaturan')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-50 rounded-lg transition"
-                  >
-                    <Settings className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Pengaturan Sistem</span>
+                    <User className="w-3.5 h-3.5 text-[#1F5FAF]" />
+                    <span>Profil Saya & Ubah Sandi</span>
                   </button>
 
                   {currentUser?.role === 'ADMIN' && (
                     <button
-                      onClick={clearLocalCache}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-slate-700 hover:bg-slate-50 rounded-lg transition"
-                      title="Menghapus cache browser lokal dan memuat ulang data murni dari Cloud Firestore"
+                      onClick={() => setActiveNav('Account Management')}
+                      className="w-full px-4 py-2 text-left text-xs text-[#1F2937] hover:bg-[#EFF6FF] flex items-center gap-2 font-medium"
                     >
-                      <RefreshCw className="w-3.5 h-3.5 text-emerald-700" />
-                      <span>Sinkron Ulang Firestore</span>
+                      <Shield className="w-3.5 h-3.5 text-[#1F5FAF]" />
+                      <span>Kelola Akun & Hak Akses</span>
                     </button>
                   )}
 
-                  <div className="border-t border-slate-100 my-1"></div>
+                  {currentUser?.role === 'ADMIN' && (
+                    <button
+                      onClick={() => setActiveNav('Pengaturan')}
+                      className="w-full px-4 py-2 text-left text-xs text-[#1F2937] hover:bg-[#EFF6FF] flex items-center gap-2 font-medium"
+                    >
+                      <Settings className="w-3.5 h-3.5 text-[#1F5FAF]" />
+                      <span>Pengaturan Sistem</span>
+                    </button>
+                  )}
+                </div>
 
+                <div className="border-t border-[#D9E2EF] pt-1">
                   <button
                     onClick={async () => {
                       await logout();
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-rose-600 hover:bg-rose-50 rounded-lg transition font-medium"
+                    className="w-full px-4 py-2 text-left text-xs text-rose-600 hover:bg-rose-50 flex items-center gap-2 font-semibold"
                   >
-                    <LogOut className="w-3.5 h-3.5 text-rose-600" />
+                    <LogOut className="w-3.5 h-3.5 text-rose-500" />
                     <span>Keluar (Logout)</span>
                   </button>
                 </div>
