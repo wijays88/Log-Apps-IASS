@@ -16,6 +16,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  writeBatch,
   onSnapshot,
   query,
 } from 'firebase/firestore';
@@ -418,7 +419,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         q,
         (snap) => {
           if (!snap.empty) {
-            const items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as T));
+            const items = snap.docs.map((d) => {
+              const data = d.data();
+              return {
+                id: d.id,
+                ...(colName === 'materials' ? { materialId: d.id, isActive: data.isActive !== false } : {}),
+                ...data,
+              } as T;
+            });
             setter(items);
             try {
               localStorage.setItem(STORAGE_KEY_PREFIX + colName, JSON.stringify(items));
@@ -755,7 +763,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: perm.reason };
     }
 
-    // Check code uniqueness
+    // 1. Mandatory field validations
     let finalCode = data.materialCode?.trim().toUpperCase();
     if (!finalCode) {
       if (settings.autoGenerateMaterialCode) {
@@ -766,10 +774,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    const duplicate = materials.find((m) => m.materialCode.toUpperCase() === finalCode);
-    if (duplicate) {
-      const msg = `Kode material "${finalCode}" sudah digunakan oleh "${duplicate.materialName}". Kode harus unik.`;
+    const finalName = data.materialName?.trim();
+    if (!finalName) {
+      showToast('error', 'Validasi Gagal', 'Nama material wajib diisi.');
+      return { success: false, message: 'Nama material wajib diisi.' };
+    }
+
+    if (!data.categoryId) {
+      showToast('error', 'Validasi Gagal', 'Kategori material wajib dipilih.');
+      return { success: false, message: 'Kategori material wajib dipilih.' };
+    }
+
+    if (!data.unitId && !data.unit) {
+      showToast('error', 'Validasi Gagal', 'Satuan ukur material wajib dipilih.');
+      return { success: false, message: 'Satuan ukur material wajib dipilih.' };
+    }
+
+    // 2. Uniqueness checks for materialCode and materialName
+    const duplicateCode = materials.find((m) => m.materialCode.toUpperCase() === finalCode);
+    if (duplicateCode) {
+      const msg = `Kode material "${finalCode}" sudah digunakan oleh "${duplicateCode.materialName}". Kode harus unik.`;
       showToast('error', 'Kode Material Duplikat', msg);
+      return { success: false, message: msg };
+    }
+
+    const duplicateName = materials.find((m) => m.materialName.trim().toLowerCase() === finalName.toLowerCase());
+    if (duplicateName) {
+      const msg = `Nama material "${finalName}" sudah terdaftar (${duplicateName.materialCode}). Gunakan nama yang berbeda.`;
+      showToast('error', 'Nama Material Duplikat', msg);
       return { success: false, message: msg };
     }
 
@@ -778,17 +810,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const location = locations.find((l) => l.id === data.defaultLocationId);
 
     const now = getJakartaTimestamp();
-    const id = 'mat-' + finalCode.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    const cleanCode = finalCode.replace(/[^A-Z0-9_-]/g, '');
+    const id = 'mat-' + (cleanCode.toLowerCase() || Date.now().toString());
 
     const newMaterial: MaterialMaster = {
       ...data,
       id,
       materialId: id,
       materialCode: finalCode,
+      materialName: finalName,
       categoryName: category ? category.name : data.categoryName || 'General',
       unit: unit ? unit.symbol : data.unit || 'Pcs',
       defaultLocationName: location ? location.name : undefined,
-      isActive: data.isActive !== undefined ? data.isActive : true,
+      isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
       createdAt: now,
       createdBy: currentUser ? currentUser.employeeId : 'SYSTEM',
       updatedAt: now,
@@ -796,10 +830,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      // 1. Authoritative write to Firestore
-      await setDoc(doc(db, 'materials', id), newMaterial);
+      // 3. Atomic commit using Firestore writeBatch to prevent partial writes
+      const batch = writeBatch(db);
+      const matDocRef = doc(db, 'materials', id);
+      batch.set(matDocRef, newMaterial);
 
-      // 2. If default location is set, register zero balance in Firestore
+      // If default location is set, atomically register initial balance in inventory
       if (newMaterial.defaultLocationId) {
         const balId = `bal-${id}-${newMaterial.defaultLocationId}`;
         const newBal: InventoryBalance = {
@@ -822,8 +858,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           lastTransactionDate: now.split(' ')[0],
           unitCost: newMaterial.unitCost,
         };
-        await setDoc(doc(db, 'inventory', balId), newBal, { merge: true });
+        const balDocRef = doc(db, 'inventory', balId);
+        batch.set(balDocRef, newBal, { merge: true });
       }
+
+      await batch.commit();
 
       await logAudit(
         'MATERIAL_CREATED',
@@ -834,7 +873,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showToast(
         'success',
         'Material Tersimpan di Cloud Firestore',
-        `Material ${newMaterial.materialName} (${newMaterial.materialCode}) telah aktif di sistem.`
+        `Material ${newMaterial.materialName} (${newMaterial.materialCode}) berhasil disimpan dan langsung tersedia di sistem.`
       );
       return { success: true, material: newMaterial };
     } catch (err: any) {
@@ -1616,8 +1655,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      // 1. Authoritative write to Firestore goodsReceipts
-      await setDoc(doc(db, 'goodsReceipts', id), newReceipt);
+      // 1. Atomic write using Firestore writeBatch to guarantee transaction and inventory consistency
+      const batch = writeBatch(db);
+      const receiptDocRef = doc(db, 'goodsReceipts', id);
+      batch.set(receiptDocRef, newReceipt);
 
       // 2. Authoritative update of inventory balance in Firestore
       const balId = `bal-${material.id}-${location.id}`;
@@ -1628,7 +1669,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (existingBal) {
         const newQtyIn = existingBal.qtyIn + data.quantity;
         const newAvailable = existingBal.openingStock + newQtyIn - existingBal.qtyOut;
-        await updateDoc(doc(db, 'inventory', existingBal.id), {
+        const balDocRef = doc(db, 'inventory', existingBal.id);
+        batch.update(balDocRef, {
           qtyIn: newQtyIn,
           availableStock: newAvailable,
           lastTransactionDate: data.receiptDate || now.split(' ')[0],
@@ -1655,8 +1697,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           lastTransactionDate: data.receiptDate || now.split(' ')[0],
           unitCost: material.unitCost,
         };
-        await setDoc(doc(db, 'inventory', balId), newBalance);
+        const balDocRef = doc(db, 'inventory', balId);
+        batch.set(balDocRef, newBalance);
       }
+
+      await batch.commit();
 
       // 3. Write Audit Log
       await logAudit(

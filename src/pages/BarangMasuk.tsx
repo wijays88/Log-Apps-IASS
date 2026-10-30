@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   ArrowDownToLine,
@@ -49,6 +49,28 @@ export const BarangMasuk: React.FC = () => {
     notes: '',
   });
 
+  // Selected Material object based on current form selection
+  const selectedMaterialObj = useMemo(() => {
+    return (
+      activeMaterials.find((m) => m.id === formData.materialId) ||
+      materials.find((m) => m.id === formData.materialId) ||
+      null
+    );
+  }, [activeMaterials, materials, formData.materialId]);
+
+  // Auto-synchronize formData.materialId when activeMaterials finishes loading or changes
+  useEffect(() => {
+    if (activeMaterials.length > 0) {
+      setFormData((prev) => {
+        const stillValid = activeMaterials.some((m) => m.id === prev.materialId);
+        if (!prev.materialId || !stillValid) {
+          return { ...prev, materialId: activeMaterials[0].id };
+        }
+        return prev;
+      });
+    }
+  }, [activeMaterials]);
+
   const filteredReceipts = goodsReceipts.filter((receipt) => {
     const matchSearch =
       receipt.receiptNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -65,26 +87,51 @@ export const BarangMasuk: React.FC = () => {
   const handleOpenModal = () => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
-      showToast('error', 'Akses Dibatasi', perm.reason || 'Peran Site Head hanya dapat melihat riwayat barang masuk.');
+      showToast('error', 'Akses Ditolak', perm.reason || 'Peran Anda tidak memiliki hak akses mencatat barang masuk.');
       return;
     }
-    setFormData((prev) => ({
-      ...prev,
-      materialId: prev.materialId || activeMaterials[0]?.id || materials[0]?.id || '',
-      destinationLocationId: prev.destinationLocationId || activeLocations[0]?.id || locations[0]?.id || '',
-      sourceSupplier: prev.sourceSupplier || suppliers[0]?.name || '',
-    }));
+    setFormData((prev) => {
+      const validMaterialId = activeMaterials.some((m) => m.id === prev.materialId)
+        ? prev.materialId
+        : activeMaterials[0]?.id || '';
+      const validLocationId = (activeLocations.length > 0 ? activeLocations : locations).some(
+        (l) => l.id === prev.destinationLocationId
+      )
+        ? prev.destinationLocationId
+        : activeLocations[0]?.id || locations[0]?.id || '';
+      const validSupplier = suppliers.some((s) => s.name === prev.sourceSupplier)
+        ? prev.sourceSupplier
+        : suppliers[0]?.name || '';
+
+      return {
+        ...prev,
+        materialId: validMaterialId,
+        destinationLocationId: validLocationId,
+        sourceSupplier: validSupplier,
+      };
+    });
     setModalOpen(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const selectedMaterial = materials.find((m) => m.id === formData.materialId);
-    const selectedLoc = locations.find((l) => l.id === formData.destinationLocationId);
+    // 1. Strict validation against activeMaterials from Firestore Master Data
+    const selectedMaterial =
+      activeMaterials.find((m) => m.id === formData.materialId) ||
+      materials.find((m) => m.id === formData.materialId);
+
+    const selectedLoc = (activeLocations.length > 0 ? activeLocations : locations).find(
+      (l) => l.id === formData.destinationLocationId
+    );
 
     if (!selectedMaterial) {
       showToast('error', 'Validasi Gagal', 'Silakan pilih material barang yang terdaftar di Master Data.');
+      return;
+    }
+
+    if (!selectedMaterial.isActive) {
+      showToast('error', 'Material Non-Aktif', 'Material yang dipilih berstatus non-aktif. Harap pilih material aktif.');
       return;
     }
 
@@ -103,12 +150,19 @@ export const BarangMasuk: React.FC = () => {
       return;
     }
 
+    if (Number(formData.quantity) <= 0) {
+      showToast('error', 'Validasi Gagal', 'Kuantitas barang masuk harus lebih besar dari 0.');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
+      // 2. Transmit exact materialId, itemId, itemCode, and itemName to guarantee identity synchronization
       const success = await addGoodsReceipt({
         receiptDate: formData.receiptDate,
         sourceSupplier: formData.sourceSupplier,
-        referenceDocument: formData.referenceDocument,
+        referenceDocument: formData.referenceDocument.trim(),
+        materialId: selectedMaterial.id,
         itemId: selectedMaterial.id,
         itemCode: selectedMaterial.materialCode,
         itemName: selectedMaterial.materialName,
@@ -116,12 +170,12 @@ export const BarangMasuk: React.FC = () => {
         unit: selectedMaterial.unit,
         destinationLocationId: selectedLoc.id,
         destinationLocationName: selectedLoc.name,
-        notes: formData.notes,
+        notes: formData.notes.trim(),
       });
 
       if (success) {
         setModalOpen(false);
-        // Reset form
+        // Reset form safely with valid active material
         setFormData({
           receiptDate: new Date().toISOString().slice(0, 10),
           sourceSupplier: suppliers[0]?.name || '',
@@ -378,7 +432,7 @@ export const BarangMasuk: React.FC = () => {
                     disabled={activeMaterials.length === 0}
                     value={formData.materialId}
                     onChange={(e) => setFormData({ ...formData, materialId: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white disabled:bg-slate-100 disabled:text-slate-400 font-medium"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1F5FAF] bg-white disabled:bg-slate-100 disabled:text-slate-400 font-medium"
                   >
                     {activeMaterials.length === 0 ? (
                       <option value="">-- Tidak ada material aktif --</option>
@@ -401,10 +455,33 @@ export const BarangMasuk: React.FC = () => {
                     disabled={activeMaterials.length === 0}
                     value={formData.quantity}
                     onChange={(e) => setFormData({ ...formData, quantity: Number(e.target.value) })}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] font-mono font-bold"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1F5FAF] font-mono font-bold"
                   />
                 </div>
               </div>
+
+              {/* Verified Material Sync Card */}
+              {selectedMaterialObj && (
+                <div className="p-3 bg-[#EFF6FF] border border-[#D9E2EF] rounded-xl flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-1.5 rounded-lg bg-[#1F5FAF]/10 text-[#1F5FAF]">
+                      <Package className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-[#123B66]">{selectedMaterialObj.materialName}</div>
+                      <div className="text-[11px] text-slate-500 font-mono">
+                        Kode: <span className="font-bold text-[#1F5FAF]">{selectedMaterialObj.materialCode}</span> • Kategori: {selectedMaterialObj.categoryName}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] text-slate-400 block">Satuan Ukur</span>
+                    <span className="font-mono font-bold text-xs text-[#123B66] px-2 py-0.5 rounded bg-white border border-[#D9E2EF]">
+                      {selectedMaterialObj.unit}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="text-slate-600 block mb-1 font-semibold">Gudang / Lokasi Tujuan</label>

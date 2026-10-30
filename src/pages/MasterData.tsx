@@ -226,6 +226,24 @@ export const MasterData: React.FC = () => {
   const handleSubmitMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
     setCodeDuplicateError('');
+
+    if (!matCode.trim()) {
+      setCodeDuplicateError('Kode material wajib diisi.');
+      return;
+    }
+    if (!matName.trim()) {
+      setCodeDuplicateError('Nama material wajib diisi.');
+      return;
+    }
+    if (!matCategoryId) {
+      setCodeDuplicateError('Kategori material wajib dipilih.');
+      return;
+    }
+    if (!matUnitId) {
+      setCodeDuplicateError('Satuan ukur material wajib dipilih.');
+      return;
+    }
+
     setIsSubmittingMat(true);
 
     const targetCat = categories.find((c) => c.id === matCategoryId);
