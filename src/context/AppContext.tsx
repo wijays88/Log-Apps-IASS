@@ -295,33 +295,59 @@ function getJakartaTimestamp(): string {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
+/**
+ * Recursively sanitizes data payloads for Firestore by omitting any keys with undefined values.
+ * This guarantees WriteBatch.set/update never fails with "Unsupported field value: undefined".
+ */
+export function sanitizeFirestoreDoc<T extends Record<string, any>>(data: T): T {
+  const clean: Record<string, any> = {};
+  for (const [key, val] of Object.entries(data)) {
+    if (val !== undefined) {
+      if (val !== null && typeof val === 'object' && !Array.isArray(val) && !(val instanceof Date)) {
+        clean[key] = sanitizeFirestoreDoc(val);
+      } else {
+        clean[key] = val;
+      }
+    }
+  }
+  return clean as T;
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const loadState = <T,>(key: string, defaultVal: T): T => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY_PREFIX + key);
-      return stored ? JSON.parse(stored) : defaultVal;
+      if (!stored) return defaultVal;
+      const parsed = JSON.parse(stored);
+      // Purge any stale mock/demo artifacts (e.g. Tissue Hand Towel demo IDs)
+      if (Array.isArray(parsed) && parsed.some((item: any) => item?.id === 'mat-tissue-ht-01' || item?.id === 'mat-tis-001')) {
+        localStorage.removeItem(STORAGE_KEY_PREFIX + key);
+        return defaultVal;
+      }
+      return parsed;
     } catch {
       return defaultVal;
     }
   };
 
-  const [users, setUsers] = useState<UserAccount[]>(() => loadState('users', INITIAL_USERS));
-  const [materials, setMaterials] = useState<MaterialMaster[]>(() => loadState('materials', INITIAL_MATERIALS));
-  const [locations, setLocations] = useState<MasterLocation[]>(() => loadState('locations', INITIAL_LOCATIONS));
-  const [categories, setCategories] = useState<MasterCategory[]>(() => loadState('categories', INITIAL_CATEGORIES));
-  const [units, setUnits] = useState<MasterUnit[]>(() => loadState('units', INITIAL_UNITS));
-  const [inventory, setInventory] = useState<InventoryBalance[]>(() => loadState('inventory', INITIAL_INVENTORY));
-  const [consumptions, setConsumptions] = useState<ConsumptionRecord[]>(() => loadState('consumptions', INITIAL_CONSUMPTION_RECORDS));
-  const [morganTrolleys, setMorganTrolleys] = useState<MorganTrolleyRecord[]>(() => loadState('trolleys', INITIAL_MORGAN_TROLLEYS));
-  const [supplyRequests, setSupplyRequests] = useState<SupplyRequestRecord[]>(() => loadState('supply_requests', INITIAL_SUPPLY_REQUESTS));
-  const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>(() => loadState('receipts', INITIAL_GOODS_RECEIPTS));
-  const [goodsIssues, setGoodsIssues] = useState<GoodsIssue[]>(() => loadState('issues', INITIAL_GOODS_ISSUES));
-  const [stockTransfers, setStockTransfers] = useState<StockTransfer[]>(() => loadState('transfers', INITIAL_STOCK_TRANSFERS));
-  const [stockOpnames, setStockOpnames] = useState<StockOpname[]>(() => loadState('opnames', INITIAL_STOCK_OPNAMES));
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>(() => loadState('approvals', INITIAL_APPROVALS));
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => loadState('audit_logs', INITIAL_AUDIT_LOGS));
-  const [requestingUnits, setRequestingUnits] = useState<MasterRequestingUnit[]>(() => loadState('req_units', INITIAL_REQUESTING_UNITS));
-  const [suppliers, setSuppliers] = useState<MasterSupplier[]>(() => loadState('suppliers', INITIAL_SUPPLIERS));
+  // Operational collections initialize empty; Cloud Firestore is the single source of truth
+  const [users, setUsers] = useState<UserAccount[]>(() => loadState('users', []));
+  const [materials, setMaterials] = useState<MaterialMaster[]>(() => loadState('materials', []));
+  const [locations, setLocations] = useState<MasterLocation[]>(() => loadState('locations', []));
+  const [categories, setCategories] = useState<MasterCategory[]>(() => loadState('categories', []));
+  const [units, setUnits] = useState<MasterUnit[]>(() => loadState('units', []));
+  const [inventory, setInventory] = useState<InventoryBalance[]>(() => loadState('inventory', []));
+  const [consumptions, setConsumptions] = useState<ConsumptionRecord[]>(() => loadState('consumptions', []));
+  const [morganTrolleys, setMorganTrolleys] = useState<MorganTrolleyRecord[]>(() => loadState('trolleys', []));
+  const [supplyRequests, setSupplyRequests] = useState<SupplyRequestRecord[]>(() => loadState('supply_requests', []));
+  const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>(() => loadState('receipts', []));
+  const [goodsIssues, setGoodsIssues] = useState<GoodsIssue[]>(() => loadState('issues', []));
+  const [stockTransfers, setStockTransfers] = useState<StockTransfer[]>(() => loadState('transfers', []));
+  const [stockOpnames, setStockOpnames] = useState<StockOpname[]>(() => loadState('opnames', []));
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>(() => loadState('approvals', []));
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => loadState('audit_logs', []));
+  const [requestingUnits, setRequestingUnits] = useState<MasterRequestingUnit[]>(() => loadState('req_units', []));
+  const [suppliers, setSuppliers] = useState<MasterSupplier[]>(() => loadState('suppliers', []));
   const [settings, setSettings] = useState<SystemSettings>(() => loadState('settings', INITIAL_SETTINGS));
 
   // Strictly start unauthenticated without falling back to users[0] or default Admin
@@ -810,8 +836,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const location = locations.find((l) => l.id === data.defaultLocationId);
 
     const now = getJakartaTimestamp();
-    const cleanCode = finalCode.replace(/[^A-Z0-9_-]/g, '');
-    const id = 'mat-' + (cleanCode.toLowerCase() || Date.now().toString());
+    const cleanCode = finalCode.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    const id = 'mat-' + cleanCode;
 
     const newMaterial: MaterialMaster = {
       ...data,
@@ -833,7 +859,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // 3. Atomic commit using Firestore writeBatch to prevent partial writes
       const batch = writeBatch(db);
       const matDocRef = doc(db, 'materials', id);
-      batch.set(matDocRef, newMaterial);
+      batch.set(matDocRef, sanitizeFirestoreDoc(newMaterial));
 
       // If default location is set, atomically register initial balance in inventory
       if (newMaterial.defaultLocationId) {
@@ -848,7 +874,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           unit: newMaterial.unit,
           locationId: newMaterial.defaultLocationId,
           locationName: newMaterial.defaultLocationName || 'Gudang Default',
-          variantValue: newMaterial.variantValue,
+          variantValue: newMaterial.variantValue || '',
           openingStock: 0,
           qtyIn: 0,
           qtyOut: 0,
@@ -859,7 +885,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           unitCost: newMaterial.unitCost,
         };
         const balDocRef = doc(db, 'inventory', balId);
-        batch.set(balDocRef, newBal, { merge: true });
+        batch.set(balDocRef, sanitizeFirestoreDoc(newBal), { merge: true });
       }
 
       await batch.commit();
@@ -919,7 +945,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      await setDoc(doc(db, 'materials', id), updatedMaterial, { merge: true });
+      await setDoc(doc(db, 'materials', id), sanitizeFirestoreDoc(updatedMaterial), { merge: true });
 
       // Sync display info into related inventory balances in Firestore
       const relatedBalances = inventory.filter((inv) => inv.materialId === id);
@@ -1658,7 +1684,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // 1. Atomic write using Firestore writeBatch to guarantee transaction and inventory consistency
       const batch = writeBatch(db);
       const receiptDocRef = doc(db, 'goodsReceipts', id);
-      batch.set(receiptDocRef, newReceipt);
+      batch.set(receiptDocRef, sanitizeFirestoreDoc(newReceipt));
 
       // 2. Authoritative update of inventory balance in Firestore
       const balId = `bal-${material.id}-${location.id}`;
@@ -1687,7 +1713,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           unit: material.unit,
           locationId: location.id,
           locationName: location.name,
-          variantValue: material.variantValue,
+          variantValue: material.variantValue || '',
           openingStock: 0,
           qtyIn: data.quantity,
           qtyOut: 0,
@@ -1698,7 +1724,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           unitCost: material.unitCost,
         };
         const balDocRef = doc(db, 'inventory', balId);
-        batch.set(balDocRef, newBalance);
+        batch.set(balDocRef, sanitizeFirestoreDoc(newBalance));
       }
 
       await batch.commit();

@@ -128,6 +128,10 @@ export const MasterData: React.FC = () => {
   const [matDescription, setMatDescription] = useState('');
   const [autoGenCode, setAutoGenCode] = useState(false);
   const [codeDuplicateError, setCodeDuplicateError] = useState('');
+  const [showNewCatInput, setShowNewCatInput] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [showNewUnitInput, setShowNewUnitInput] = useState(false);
+  const [newUnitSymbol, setNewUnitSymbol] = useState('');
 
   // Form states for Location
   const [editingLocationId, setEditingLocationId] = useState<string | null>(null);
@@ -189,6 +193,10 @@ export const MasterData: React.FC = () => {
     const nextSeq = settings.materialCodeSequence + materials.length + 1;
     setMatCode(settings.autoGenerateMaterialCode ? `${settings.materialCodePrefix}-${nextSeq}` : '');
     setMatName('');
+    setShowNewCatInput(categories.length === 0);
+    setNewCatName('');
+    setShowNewUnitInput(units.length === 0);
+    setNewUnitSymbol('');
     setMatCategoryId(categories[0]?.id || '');
     setMatSubcategoryId('');
     setMatUnitId(units[0]?.id || '');
@@ -207,6 +215,10 @@ export const MasterData: React.FC = () => {
     setEditingMaterialId(m.id);
     setCodeDuplicateError('');
     setAutoGenCode(false);
+    setShowNewCatInput(false);
+    setNewCatName('');
+    setShowNewUnitInput(false);
+    setNewUnitSymbol('');
     setMatCode(m.materialCode);
     setMatName(m.materialName);
     setMatCategoryId(m.categoryId);
@@ -235,19 +247,44 @@ export const MasterData: React.FC = () => {
       setCodeDuplicateError('Nama material wajib diisi.');
       return;
     }
-    if (!matCategoryId) {
-      setCodeDuplicateError('Kategori material wajib dipilih.');
-      return;
+
+    let finalCategoryId = matCategoryId;
+    let finalCategoryName = '';
+    if (showNewCatInput && newCatName.trim()) {
+      const cleanCatName = newCatName.trim();
+      const catCode = 'CAT-' + cleanCatName.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+      const catId = 'cat-' + cleanCatName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+      await saveCategory({ id: catId, code: catCode, name: cleanCatName, description: 'Kategori via registrasi material' });
+      finalCategoryId = catId;
+      finalCategoryName = cleanCatName;
+    } else {
+      if (!matCategoryId) {
+        setCodeDuplicateError('Kategori material wajib dipilih.');
+        return;
+      }
+      const targetCat = categories.find((c) => c.id === matCategoryId);
+      finalCategoryName = targetCat?.name || 'General';
     }
-    if (!matUnitId) {
-      setCodeDuplicateError('Satuan ukur material wajib dipilih.');
-      return;
+
+    let finalUnitId = matUnitId;
+    let finalUnitSymbol = '';
+    if (showNewUnitInput && newUnitSymbol.trim()) {
+      const cleanUnit = newUnitSymbol.trim();
+      const unitId = 'unit-' + cleanUnit.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+      await saveUnit({ id: unitId, code: cleanUnit.toUpperCase(), name: cleanUnit, symbol: cleanUnit, description: 'Satuan via registrasi material' });
+      finalUnitId = unitId;
+      finalUnitSymbol = cleanUnit;
+    } else {
+      if (!matUnitId) {
+        setCodeDuplicateError('Satuan ukur material wajib dipilih.');
+        return;
+      }
+      const targetUnit = units.find((u) => u.id === matUnitId);
+      finalUnitSymbol = targetUnit?.symbol || 'Pcs';
     }
 
     setIsSubmittingMat(true);
 
-    const targetCat = categories.find((c) => c.id === matCategoryId);
-    const targetUnit = units.find((u) => u.id === matUnitId);
     const targetLoc = locations.find((l) => l.id === matDefaultLocId);
 
     try {
@@ -255,11 +292,11 @@ export const MasterData: React.FC = () => {
         const result = await updateMaterial(editingMaterialId, {
           materialCode: matCode.trim().toUpperCase(),
           materialName: matName.trim(),
-          categoryId: matCategoryId,
-          categoryName: targetCat?.name || 'General',
+          categoryId: finalCategoryId,
+          categoryName: finalCategoryName,
           subcategoryId: matSubcategoryId.trim() || undefined,
-          unitId: matUnitId,
-          unit: targetUnit?.symbol || 'Pcs',
+          unitId: finalUnitId,
+          unit: finalUnitSymbol,
           minimumStock: Number(matMinStock),
           reorderPoint: Number(matRop),
           defaultLocationId: matDefaultLocId || undefined,
@@ -278,11 +315,11 @@ export const MasterData: React.FC = () => {
         const result = await addMaterial({
           materialCode: matCode.trim().toUpperCase(),
           materialName: matName.trim(),
-          categoryId: matCategoryId,
-          categoryName: targetCat?.name || 'General',
+          categoryId: finalCategoryId,
+          categoryName: finalCategoryName,
           subcategoryId: matSubcategoryId.trim() || undefined,
-          unitId: matUnitId,
-          unit: targetUnit?.symbol || 'Pcs',
+          unitId: finalUnitId,
+          unit: finalUnitSymbol,
           minimumStock: Number(matMinStock),
           reorderPoint: Number(matRop),
           defaultLocationId: matDefaultLocId || undefined,
@@ -1803,19 +1840,40 @@ export const MasterData: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="text-slate-700 font-bold block mb-1">Satuan Ukur (Unit of Measure) *</label>
-                  <select
-                    required
-                    value={matUnitId}
-                    onChange={(e) => setMatUnitId(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                  >
-                    {units.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.name} ({u.symbol})
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-slate-700 font-bold">Satuan Ukur (UOM) *</label>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewUnitInput(!showNewUnitInput)}
+                      className="text-[11px] text-[#1F5FAF] hover:underline font-semibold"
+                    >
+                      {showNewUnitInput ? 'Pilih dari daftar' : '+ Satuan baru'}
+                    </button>
+                  </div>
+                  {showNewUnitInput ? (
+                    <input
+                      type="text"
+                      required
+                      placeholder="Simbol satuan (mis: Pcs, Pack, Roll, Box, Kg)"
+                      value={newUnitSymbol}
+                      onChange={(e) => setNewUnitSymbol(e.target.value)}
+                      className="w-full px-3 py-2 border border-blue-300 bg-blue-50/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1F5FAF] font-bold"
+                    />
+                  ) : (
+                    <select
+                      required
+                      value={matUnitId}
+                      onChange={(e) => setMatUnitId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+                    >
+                      <option value="">-- Pilih Satuan --</option>
+                      {units.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.symbol})
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -1835,19 +1893,40 @@ export const MasterData: React.FC = () => {
               {/* Category, Subcategory, and Default Location */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="text-slate-700 font-bold block mb-1">Kategori Material *</label>
-                  <select
-                    required
-                    value={matCategoryId}
-                    onChange={(e) => setMatCategoryId(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
-                  >
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-slate-700 font-bold">Kategori Material *</label>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewCatInput(!showNewCatInput)}
+                      className="text-[11px] text-[#1F5FAF] hover:underline font-semibold"
+                    >
+                      {showNewCatInput ? 'Pilih dari daftar' : '+ Kategori baru'}
+                    </button>
+                  </div>
+                  {showNewCatInput ? (
+                    <input
+                      type="text"
+                      required
+                      placeholder="Nama kategori (mis: Tissue, Chemical, Plastic)"
+                      value={newCatName}
+                      onChange={(e) => setNewCatName(e.target.value)}
+                      className="w-full px-3 py-2 border border-blue-300 bg-blue-50/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1F5FAF] font-bold"
+                    />
+                  ) : (
+                    <select
+                      required
+                      value={matCategoryId}
+                      onChange={(e) => setMatCategoryId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+                    >
+                      <option value="">-- Pilih Kategori --</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
 
                 <div>

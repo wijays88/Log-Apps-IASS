@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -11,7 +11,13 @@ const firestoreDbId =
     ? firebaseConfig.firestoreDatabaseId
     : undefined;
 
-export const db = firestoreDbId ? getFirestore(app, firestoreDbId) : getFirestore(app);
+export const db = initializeFirestore(
+  app,
+  {
+    ignoreUndefinedProperties: true,
+  },
+  firestoreDbId
+);
 export const auth = getAuth(app);
 
 export enum OperationType {

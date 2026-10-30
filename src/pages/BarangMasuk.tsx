@@ -58,6 +58,8 @@ export const BarangMasuk: React.FC = () => {
     );
   }, [activeMaterials, materials, formData.materialId]);
 
+  const [customSupplierMode, setCustomSupplierMode] = useState(false);
+
   // Auto-synchronize formData.materialId when activeMaterials finishes loading or changes
   useEffect(() => {
     if (activeMaterials.length > 0) {
@@ -70,6 +72,33 @@ export const BarangMasuk: React.FC = () => {
       });
     }
   }, [activeMaterials]);
+
+  // Auto-synchronize destinationLocationId when locations finish loading or change
+  useEffect(() => {
+    const validLocs = activeLocations.length > 0 ? activeLocations : locations;
+    if (validLocs.length > 0) {
+      setFormData((prev) => {
+        const stillValid = validLocs.some((l) => l.id === prev.destinationLocationId);
+        if (!prev.destinationLocationId || !stillValid) {
+          return { ...prev, destinationLocationId: validLocs[0].id };
+        }
+        return prev;
+      });
+    }
+  }, [activeLocations, locations]);
+
+  // Auto-synchronize sourceSupplier when suppliers finish loading or change
+  useEffect(() => {
+    if (suppliers.length > 0) {
+      setFormData((prev) => {
+        const stillValid = suppliers.some((s) => s.name === prev.sourceSupplier);
+        if (!prev.sourceSupplier || !stillValid) {
+          return { ...prev, sourceSupplier: suppliers[0].name };
+        }
+        return prev;
+      });
+    }
+  }, [suppliers]);
 
   const filteredReceipts = goodsReceipts.filter((receipt) => {
     const matchSearch =
@@ -382,19 +411,42 @@ export const BarangMasuk: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="text-slate-600 block mb-1 font-semibold">Pemasok / Sumber</label>
-                  <select
-                    required
-                    value={formData.sourceSupplier}
-                    onChange={(e) => setFormData({ ...formData, sourceSupplier: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
-                  >
-                    {suppliers.map((s) => (
-                      <option key={s.id} value={s.name}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-slate-600 font-semibold">Pemasok / Sumber *</label>
+                    {suppliers.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setCustomSupplierMode(!customSupplierMode)}
+                        className="text-[11px] text-[#1F5FAF] hover:underline font-semibold"
+                      >
+                        {customSupplierMode ? 'Pilih dari daftar' : '+ Ketik nama'}
+                      </button>
+                    )}
+                  </div>
+                  {customSupplierMode || suppliers.length === 0 ? (
+                    <input
+                      type="text"
+                      required
+                      placeholder="Nama vendor / pemasok (misal: PT Surya Graha)"
+                      value={formData.sourceSupplier}
+                      onChange={(e) => setFormData({ ...formData, sourceSupplier: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1F5FAF] bg-white font-medium"
+                    />
+                  ) : (
+                    <select
+                      required
+                      value={formData.sourceSupplier}
+                      onChange={(e) => setFormData({ ...formData, sourceSupplier: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1F5FAF] bg-white font-medium"
+                    >
+                      <option value="">-- Pilih Pemasok --</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.name}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -484,18 +536,26 @@ export const BarangMasuk: React.FC = () => {
               )}
 
               <div>
-                <label className="text-slate-600 block mb-1 font-semibold">Gudang / Lokasi Tujuan</label>
+                <label className="text-slate-600 block mb-1 font-semibold">Gudang / Lokasi Tujuan *</label>
                 <select
                   required
+                  disabled={(activeLocations.length > 0 ? activeLocations : locations).length === 0}
                   value={formData.destinationLocationId}
                   onChange={(e) => setFormData({ ...formData, destinationLocationId: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1F5FAF] bg-white font-medium disabled:bg-slate-100 disabled:text-slate-400"
                 >
-                  {(activeLocations.length > 0 ? activeLocations : locations).map((loc) => (
-                    <option key={loc.id} value={loc.id}>
-                      {loc.code} - {loc.name} ({loc.type})
-                    </option>
-                  ))}
+                  {(activeLocations.length > 0 ? activeLocations : locations).length === 0 ? (
+                    <option value="">-- Belum ada lokasi gudang di Master Data --</option>
+                  ) : (
+                    <>
+                      <option value="">-- Pilih Lokasi Gudang --</option>
+                      {(activeLocations.length > 0 ? activeLocations : locations).map((loc) => (
+                        <option key={loc.id} value={loc.id}>
+                          {loc.code} - {loc.name} ({loc.type})
+                        </option>
+                      ))}
+                    </>
+                  )}
                 </select>
               </div>
 
