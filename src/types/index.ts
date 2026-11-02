@@ -45,7 +45,7 @@ export interface MasterLocation {
   locationName?: string; // alias
   type: string; // 'Terminal' | 'Warehouse' | 'Transit Hub' | 'Toilet Area' | 'Gedung' | 'Workshop' | 'Depot' | 'Other'
   locationType?: string; // alias
-  parentLocationId?: string | null;
+  parentLocationId?: string;
   parentLocationName?: string;
   address?: string;
   capacityM2?: number;
@@ -70,7 +70,7 @@ export interface MaterialMaster {
   categoryId: string;
   categoryName: string;
   subcategoryId?: string;
-  unitId: string;
+  unitId?: string;
   unit: string; // symbol e.g. 'Pcs', 'Roll', 'Box'
   description?: string;
   minimumStock: number;

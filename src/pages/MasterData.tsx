@@ -144,13 +144,174 @@ export const MasterData: React.FC = () => {
   const [locAddress, setLocAddress] = useState('');
   const [locDesc, setLocDesc] = useState('');
 
-  // Category & Unit modal
+  // Category & Unit modal and form states
   const [catModalOpen, setCatModalOpen] = useState(false);
   const [editingCat, setEditingCat] = useState<Partial<MasterCategory> | null>(null);
+  const [catCode, setCatCode] = useState('');
+  const [catName, setCatName] = useState('');
+  const [catDescription, setCatDescription] = useState('');
+  const [catIsActive, setCatIsActive] = useState(true);
+  const [isSubmittingCat, setIsSubmittingCat] = useState(false);
+  const [catError, setCatError] = useState('');
+
   const [unitModalOpen, setUnitModalOpen] = useState(false);
   const [editingUnit, setEditingUnit] = useState<Partial<MasterUnit> | null>(null);
+  const [unitCode, setUnitCode] = useState('');
+  const [unitName, setUnitName] = useState('');
+  const [unitSymbol, setUnitSymbol] = useState('');
+  const [unitDescription, setUnitDescription] = useState('');
+  const [unitIsActive, setUnitIsActive] = useState(true);
+  const [isSubmittingUnit, setIsSubmittingUnit] = useState(false);
+  const [unitError, setUnitError] = useState('');
 
   const canManage = can('MANAGE_MASTER_DATA').allowed;
+
+  // Handlers for Category modal
+  const handleOpenAddCategory = () => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat menambah kategori.');
+      return;
+    }
+    setEditingCat(null);
+    setCatCode(`CAT-${String(categories.length + 1).padStart(3, '0')}`);
+    setCatName('');
+    setCatDescription('');
+    setCatIsActive(true);
+    setCatError('');
+    setCatModalOpen(true);
+  };
+
+  const handleOpenEditCategory = (c: MasterCategory) => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat mengubah kategori.');
+      return;
+    }
+    setEditingCat(c);
+    setCatCode(c.code);
+    setCatName(c.name);
+    setCatDescription(c.description || '');
+    setCatIsActive(c.isActive !== false);
+    setCatError('');
+    setCatModalOpen(true);
+  };
+
+  const handleSubmitCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCatError('');
+    const cleanCode = catCode.trim().toUpperCase();
+    const cleanName = catName.trim();
+
+    if (!cleanCode) {
+      setCatError('Kode kategori wajib diisi.');
+      return;
+    }
+    if (!cleanName) {
+      setCatError('Nama kategori wajib diisi.');
+      return;
+    }
+
+    const duplicate = categories.find(
+      (c) =>
+        c.id !== editingCat?.id &&
+        (c.code.toUpperCase() === cleanCode || c.name.toLowerCase() === cleanName.toLowerCase())
+    );
+    if (duplicate) {
+      setCatError(`Kategori dengan kode atau nama tersebut sudah ada (${duplicate.code} - ${duplicate.name}).`);
+      return;
+    }
+
+    setIsSubmittingCat(true);
+    try {
+      const success = await saveCategory({
+        id: editingCat?.id,
+        code: cleanCode,
+        name: cleanName,
+        description: catDescription.trim(),
+        isActive: catIsActive,
+      });
+      if (success) {
+        setCatModalOpen(false);
+      }
+    } finally {
+      setIsSubmittingCat(false);
+    }
+  };
+
+  // Handlers for Unit modal
+  const handleOpenAddUnit = () => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat menambah satuan.');
+      return;
+    }
+    setEditingUnit(null);
+    setUnitCode(`U-${String(units.length + 1).padStart(2, '0')}`);
+    setUnitName('');
+    setUnitSymbol('');
+    setUnitDescription('');
+    setUnitIsActive(true);
+    setUnitError('');
+    setUnitModalOpen(true);
+  };
+
+  const handleOpenEditUnit = (u: MasterUnit) => {
+    if (!canManage) {
+      showToast('error', 'Akses Ditolak', 'Hanya staf berwenang yang dapat mengubah satuan.');
+      return;
+    }
+    setEditingUnit(u);
+    setUnitCode(u.code || u.symbol.toUpperCase());
+    setUnitName(u.name);
+    setUnitSymbol(u.symbol);
+    setUnitDescription(u.description || '');
+    setUnitIsActive(u.isActive !== false);
+    setUnitError('');
+    setUnitModalOpen(true);
+  };
+
+  const handleSubmitUnit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setUnitError('');
+    const cleanName = unitName.trim();
+    const cleanSymbol = unitSymbol.trim();
+    const cleanCode = (unitCode.trim() || cleanSymbol).toUpperCase();
+
+    if (!cleanName) {
+      setUnitError('Nama satuan wajib diisi.');
+      return;
+    }
+    if (!cleanSymbol) {
+      setUnitError('Simbol satuan wajib diisi.');
+      return;
+    }
+
+    const duplicate = units.find(
+      (u) =>
+        u.id !== editingUnit?.id &&
+        (u.symbol.toLowerCase() === cleanSymbol.toLowerCase() ||
+          u.name.toLowerCase() === cleanName.toLowerCase())
+    );
+    if (duplicate) {
+      setUnitError(`Satuan dengan simbol atau nama tersebut sudah ada (${duplicate.symbol} - ${duplicate.name}).`);
+      return;
+    }
+
+    setIsSubmittingUnit(true);
+    try {
+      const success = await saveUnit({
+        id: editingUnit?.id,
+        code: cleanCode,
+        name: cleanName,
+        symbol: cleanSymbol,
+        description: unitDescription.trim(),
+        isActive: unitIsActive,
+      });
+      if (success) {
+        setUnitModalOpen(false);
+      }
+    } finally {
+      setIsSubmittingUnit(false);
+    }
+  };
 
   // Filtered Materials
   const filteredMaterials = useMemo(() => {
@@ -202,7 +363,7 @@ export const MasterData: React.FC = () => {
     setMatUnitId(units[0]?.id || '');
     setMatMinStock(50);
     setMatRop(100);
-    setMatDefaultLocId(locations[0]?.id || '');
+    setMatDefaultLocId('');
     setMatVariantAttrs('');
     setMatVariantVal('');
     setMatUnitCost(25000);
@@ -223,7 +384,7 @@ export const MasterData: React.FC = () => {
     setMatName(m.materialName);
     setMatCategoryId(m.categoryId);
     setMatSubcategoryId(m.subcategoryId || '');
-    setMatUnitId(m.unitId);
+    setMatUnitId(m.unitId || '');
     setMatMinStock(m.minimumStock);
     setMatRop(m.reorderPoint);
     setMatDefaultLocId(m.defaultLocationId || '');
@@ -379,7 +540,7 @@ export const MasterData: React.FC = () => {
           code: locCode.trim().toUpperCase(),
           name: locName.trim(),
           type: locType,
-          parentLocationId: locParentId || null,
+          parentLocationId: locParentId || undefined,
           picName: locPic.trim(),
           personInCharge: locPic.trim(),
           capacityM2: Number(locCapacity),
@@ -392,7 +553,7 @@ export const MasterData: React.FC = () => {
           code: locCode.trim().toUpperCase(),
           name: locName.trim(),
           type: locType,
-          parentLocationId: locParentId || null,
+          parentLocationId: locParentId || undefined,
           picName: locPic.trim(),
           personInCharge: locPic.trim(),
           capacityM2: Number(locCapacity),
@@ -1350,14 +1511,12 @@ export const MasterData: React.FC = () => {
       {activeTab === 'CATEGORIES' && (
         <div className="space-y-4">
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-500">Konfigurasi dinamis kategori material PT IAS Support</span>
+            <span className="text-xs text-slate-500">Konfigurasi dinamis kategori material PT IAS Support ({categories.length} Terdaftar)</span>
             {canManage && (
               <button
-                onClick={() => {
-                  setEditingCat({ code: 'CAT-' + (categories.length + 1), name: '', description: '', isActive: true });
-                  setCatModalOpen(true);
-                }}
-                className="px-3.5 py-2 rounded-xl bg-[#064e3b] text-white font-bold text-xs shadow-2xs flex items-center gap-1.5"
+                type="button"
+                onClick={handleOpenAddCategory}
+                className="px-3.5 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-2xs flex items-center gap-1.5 transition"
               >
                 <Plus className="w-4 h-4" />
                 <span>Tambah Kategori</span>
@@ -1377,20 +1536,29 @@ export const MasterData: React.FC = () => {
                       {c.isActive ? 'Active' : 'Inactive'}
                     </span>
                     {canManage && (
-                      <button
-                        onClick={() => {
-                          setEditingCat(c);
-                          setCatModalOpen(true);
-                        }}
-                        className="p-1 text-slate-400 hover:text-slate-700"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditCategory(c)}
+                          className="p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100 transition"
+                          title="Ubah Kategori"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleCategoryStatus(c.id)}
+                          className={`p-1 rounded transition ${c.isActive ? 'text-rose-600 hover:bg-rose-50' : 'text-emerald-700 hover:bg-emerald-50'}`}
+                          title={c.isActive ? 'Non-aktifkan Kategori' : 'Aktifkan Kategori'}
+                        >
+                          <Power className="w-3.5 h-3.5" />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
                 <h3 className="font-bold text-slate-900 text-sm">{c.name}</h3>
-                <p className="text-xs text-slate-500 leading-relaxed">{c.description}</p>
+                <p className="text-xs text-slate-500 leading-relaxed">{c.description || '-'}</p>
               </div>
             ))}
           </div>
@@ -1403,14 +1571,12 @@ export const MasterData: React.FC = () => {
       {activeTab === 'UNITS' && (
         <div className="space-y-4">
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-500">Daftar satuan ukuran fisik persediaan</span>
+            <span className="text-xs text-slate-500">Daftar satuan ukuran fisik persediaan ({units.length} Terdaftar)</span>
             {canManage && (
               <button
-                onClick={() => {
-                  setEditingUnit({ name: '', symbol: '', description: '', isActive: true });
-                  setUnitModalOpen(true);
-                }}
-                className="px-3.5 py-2 rounded-xl bg-[#064e3b] text-white font-bold text-xs shadow-2xs flex items-center gap-1.5"
+                type="button"
+                onClick={handleOpenAddUnit}
+                className="px-3.5 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold text-xs shadow-2xs flex items-center gap-1.5 transition"
               >
                 <Plus className="w-4 h-4" />
                 <span>Tambah Satuan</span>
@@ -1434,7 +1600,7 @@ export const MasterData: React.FC = () => {
                   <tr key={u.id} className="hover:bg-slate-50">
                     <td className="py-3 px-4 font-bold text-slate-800">{u.name}</td>
                     <td className="py-3 px-4 font-mono font-bold text-emerald-800">{u.symbol}</td>
-                    <td className="py-3 px-4 text-slate-500">{u.description}</td>
+                    <td className="py-3 px-4 text-slate-500">{u.description || '-'}</td>
                     <td className="py-3 px-4 text-center font-bold text-[10px]">
                       {u.isActive ? (
                         <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">Active</span>
@@ -1444,15 +1610,24 @@ export const MasterData: React.FC = () => {
                     </td>
                     <td className="py-3 px-4 text-center">
                       {canManage ? (
-                        <button
-                          onClick={() => {
-                            setEditingUnit(u);
-                            setUnitModalOpen(true);
-                          }}
-                          className="p-1 text-slate-500 hover:text-slate-800"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditUnit(u)}
+                            className="p-1 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-100 transition"
+                            title="Ubah Satuan"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleUnitStatus(u.id)}
+                            className={`p-1 rounded transition ${u.isActive ? 'text-rose-600 hover:bg-rose-50' : 'text-emerald-700 hover:bg-emerald-50'}`}
+                            title={u.isActive ? 'Non-aktifkan Satuan' : 'Aktifkan Satuan'}
+                          >
+                            <Power className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       ) : (
                         '-'
                       )}
@@ -1941,16 +2116,16 @@ export const MasterData: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="text-slate-700 font-bold block mb-1">Default Lokasi Gudang</label>
+                  <label className="text-slate-700 font-bold block mb-1">Default Lokasi Gudang (Opsional)</label>
                   <select
                     value={matDefaultLocId}
                     onChange={(e) => setMatDefaultLocId(e.target.value)}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
                   >
-                    <option value="">-- Pilih Lokasi Default --</option>
+                    <option value="">-- Tanpa Lokasi Default (Opsional) --</option>
                     {locations.map((l) => (
                       <option key={l.id} value={l.id}>
-                        {l.name}
+                        {l.name} ({l.code})
                       </option>
                     ))}
                   </select>
@@ -3041,6 +3216,226 @@ export const MasterData: React.FC = () => {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: ADD / EDIT CATEGORY */}
+      {/* ------------------------------------------------------------------ */}
+      {catModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in">
+          <form
+            onSubmit={handleSubmitCategory}
+            className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-emerald-50 text-emerald-800 rounded-lg">
+                  <Layers className="w-4 h-4" />
+                </div>
+                <h3 className="text-base font-bold text-slate-900">
+                  {editingCat ? 'Ubah Data Kategori' : 'Tambah Kategori Material'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCatModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {catError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
+                {catError}
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Kode Kategori *</label>
+                <input
+                  type="text"
+                  required
+                  value={catCode}
+                  onChange={(e) => setCatCode(e.target.value.toUpperCase())}
+                  placeholder="Contoh: CAT-001"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono font-bold uppercase focus:ring-2 focus:ring-[#064e3b]/30"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Nama Kategori *</label>
+                <input
+                  type="text"
+                  required
+                  value={catName}
+                  onChange={(e) => setCatName(e.target.value)}
+                  placeholder="Contoh: General Supplies"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg font-semibold focus:ring-2 focus:ring-[#064e3b]/30"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Keterangan / Deskripsi</label>
+                <textarea
+                  rows={2}
+                  value={catDescription}
+                  onChange={(e) => setCatDescription(e.target.value)}
+                  placeholder="Deskripsi jenis material yang masuk kategori ini..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg resize-none focus:ring-2 focus:ring-[#064e3b]/30"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="catIsActive"
+                  checked={catIsActive}
+                  onChange={(e) => setCatIsActive(e.target.checked)}
+                  className="w-4 h-4 text-[#064e3b] rounded border-slate-300"
+                />
+                <label htmlFor="catIsActive" className="text-xs text-slate-700 font-semibold cursor-pointer">
+                  Kategori Aktif (Dapat dipilih dalam master data material)
+                </label>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isSubmittingCat}
+                onClick={() => setCatModalOpen(false)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingCat}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold transition flex items-center gap-1.5"
+              >
+                {isSubmittingCat ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Simpan Kategori</span>}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: ADD / EDIT UNIT */}
+      {/* ------------------------------------------------------------------ */}
+      {unitModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in">
+          <form
+            onSubmit={handleSubmitUnit}
+            className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-emerald-50 text-emerald-800 rounded-lg">
+                  <Ruler className="w-4 h-4" />
+                </div>
+                <h3 className="text-base font-bold text-slate-900">
+                  {editingUnit ? 'Ubah Data Satuan' : 'Tambah Satuan Ukur'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUnitModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {unitError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700">
+                {unitError}
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-700 font-bold block mb-1">Kode Satuan</label>
+                  <input
+                    type="text"
+                    value={unitCode}
+                    onChange={(e) => setUnitCode(e.target.value.toUpperCase())}
+                    placeholder="Contoh: U-01"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono font-bold uppercase focus:ring-2 focus:ring-[#064e3b]/30"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-700 font-bold block mb-1">Simbol / Singkatan *</label>
+                  <input
+                    type="text"
+                    required
+                    value={unitSymbol}
+                    onChange={(e) => setUnitSymbol(e.target.value)}
+                    placeholder="Contoh: Roll, Pcs, Box"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono font-bold focus:ring-2 focus:ring-[#064e3b]/30"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Nama Lengkap Satuan *</label>
+                <input
+                  type="text"
+                  required
+                  value={unitName}
+                  onChange={(e) => setUnitName(e.target.value)}
+                  placeholder="Contoh: Gulungan (Roll), Buah (Pieces)"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg font-semibold focus:ring-2 focus:ring-[#064e3b]/30"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-700 font-bold block mb-1">Keterangan</label>
+                <textarea
+                  rows={2}
+                  value={unitDescription}
+                  onChange={(e) => setUnitDescription(e.target.value)}
+                  placeholder="Keterangan penggunaan satuan..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg resize-none focus:ring-2 focus:ring-[#064e3b]/30"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="unitIsActive"
+                  checked={unitIsActive}
+                  onChange={(e) => setUnitIsActive(e.target.checked)}
+                  className="w-4 h-4 text-[#064e3b] rounded border-slate-300"
+                />
+                <label htmlFor="unitIsActive" className="text-xs text-slate-700 font-semibold cursor-pointer">
+                  Satuan Aktif (Dapat dipilih dalam master material)
+                </label>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isSubmittingUnit}
+                onClick={() => setUnitModalOpen(false)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingUnit}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] hover:bg-[#065f46] text-white font-bold transition flex items-center gap-1.5"
+              >
+                {isSubmittingUnit ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>Simpan Satuan</span>}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

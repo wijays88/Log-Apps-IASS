@@ -845,9 +845,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       materialId: id,
       materialCode: finalCode,
       materialName: finalName,
+      categoryId: data.categoryId,
       categoryName: category ? category.name : data.categoryName || 'General',
+      unitId: data.unitId || undefined,
       unit: unit ? unit.symbol : data.unit || 'Pcs',
+      defaultLocationId: data.defaultLocationId || undefined,
       defaultLocationName: location ? location.name : undefined,
+      subcategoryId: data.subcategoryId || undefined,
+      variantAttributes: data.variantAttributes || undefined,
+      variantValue: data.variantValue || undefined,
+      minimumStock: Number(data.minimumStock) || 0,
+      reorderPoint: Number(data.reorderPoint) || 0,
+      unitCost: Number(data.unitCost) || 0,
+      description: data.description || '',
       isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
       createdAt: now,
       createdBy: currentUser ? currentUser.employeeId : 'SYSTEM',
@@ -904,7 +914,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true, material: newMaterial };
     } catch (err: any) {
       console.error('[Firestore Error: addMaterial]', err);
-      const errMsg = err.message || 'Gagal menyimpan material ke Cloud Firestore.';
+      const errMsg = err.code === 'permission-denied'
+        ? 'Izin tidak mencukupi untuk menambah material. Diperlukan role ADMIN atau LOGISTIK aktif.'
+        : (err.message || 'Gagal menyimpan material ke Cloud Firestore.');
       showToast('error', 'Gagal Menyimpan ke Cloud Firestore', errMsg);
       return { success: false, message: errMsg };
     }
@@ -1083,7 +1095,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const now = getJakartaTimestamp();
     const id = 'loc-' + codeUpper.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-    const parentLoc = locations.find((l) => l.id === data.parentLocationId);
+    const parentLoc = data.parentLocationId ? locations.find((l) => l.id === data.parentLocationId) : undefined;
 
     const newLocation: MasterLocation = {
       ...data,
@@ -1092,6 +1104,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       code: codeUpper,
       locationCode: codeUpper,
       locationName: data.name,
+      parentLocationId: data.parentLocationId || undefined,
       parentLocationName: parentLoc ? parentLoc.name : undefined,
       isActive: data.isActive !== undefined ? data.isActive : true,
       createdAt: now,
@@ -1100,7 +1113,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      await setDoc(doc(db, 'locations', id), newLocation);
+      await setDoc(doc(db, 'locations', id), sanitizeFirestoreDoc(newLocation));
       await logAudit(
         'LOCATION_CREATED',
         'Master Data',
@@ -1110,7 +1123,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true, location: newLocation };
     } catch (err: any) {
       console.error('[Firestore Error: addLocation]', err);
-      const errMsg = err.message || 'Gagal menyimpan lokasi ke Cloud Firestore.';
+      const errMsg = err.code === 'permission-denied'
+        ? 'Izin tidak mencukupi untuk menambah lokasi. Diperlukan role ADMIN atau LOGISTIK aktif.'
+        : (err.message || 'Gagal menyimpan lokasi ke Cloud Firestore.');
       showToast('error', 'Gagal Menyimpan Lokasi', errMsg);
       return { success: false, message: errMsg };
     }
@@ -1145,15 +1160,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const now = getJakartaTimestamp();
     const parentLoc = updates.parentLocationId ? locations.find((l) => l.id === updates.parentLocationId) : undefined;
+    const resolvedParentName = parentLoc
+      ? parentLoc.name
+      : (updates.parentLocationId === '' ? undefined : currentLoc.parentLocationName);
+
     const updatedLocation: MasterLocation = {
       ...currentLoc,
       ...updates,
-      parentLocationName: parentLoc ? parentLoc.name : currentLoc.parentLocationName,
+      parentLocationId: updates.parentLocationId !== undefined ? (updates.parentLocationId || undefined) : currentLoc.parentLocationId,
+      parentLocationName: resolvedParentName,
       updatedAt: now,
     };
 
     try {
-      await setDoc(doc(db, 'locations', id), updatedLocation, { merge: true });
+      await setDoc(doc(db, 'locations', id), sanitizeFirestoreDoc(updatedLocation), { merge: true });
 
       // Sync display locationName into inventory balances
       if (updates.name) {
@@ -1168,7 +1188,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true };
     } catch (err: any) {
       console.error('[Firestore Error: updateLocation]', err);
-      const errMsg = err.message || 'Gagal memperbarui lokasi di Cloud Firestore.';
+      const errMsg = err.code === 'permission-denied'
+        ? 'Izin tidak mencukupi untuk memperbarui lokasi. Diperlukan role ADMIN atau LOGISTIK aktif.'
+        : (err.message || 'Gagal memperbarui lokasi di Cloud Firestore.');
       showToast('error', 'Gagal Memperbarui Lokasi', errMsg);
       return { success: false, message: errMsg };
     }
@@ -1251,7 +1273,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       if (catData.id) {
-        await updateDoc(doc(db, 'categories', catData.id), catData);
+        await updateDoc(doc(db, 'categories', catData.id), sanitizeFirestoreDoc(catData));
         showToast('success', 'Kategori Disimpan', `Kategori ${catData.name} diperbarui di Cloud Firestore.`);
       } else {
         const id = 'cat-' + (catData.code?.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || Date.now());
@@ -1260,15 +1282,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           code: catData.code?.toUpperCase() || 'CAT-' + (categories.length + 1),
           name: catData.name || 'Kategori Baru',
           description: catData.description || '',
-          isActive: true,
+          isActive: catData.isActive !== false,
         };
-        await setDoc(doc(db, 'categories', id), newCat);
+        await setDoc(doc(db, 'categories', id), sanitizeFirestoreDoc(newCat));
         showToast('success', 'Kategori Ditambahkan', `Kategori ${newCat.name} berhasil dibuat di Cloud Firestore.`);
       }
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: saveCategory]', err);
-      showToast('error', 'Gagal Menyimpan Kategori', err.message);
+      const errMsg = err.code === 'permission-denied'
+        ? 'Izin tidak mencukupi untuk menyimpan kategori. Diperlukan role ADMIN atau LOGISTIK aktif.'
+        : err.message;
+      showToast('error', 'Gagal Menyimpan Kategori', errMsg);
       return false;
     }
   };
@@ -1296,7 +1321,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       if (unitData.id) {
-        await updateDoc(doc(db, 'units', unitData.id), unitData);
+        await updateDoc(doc(db, 'units', unitData.id), sanitizeFirestoreDoc(unitData));
         showToast('success', 'Satuan Disimpan', `Satuan ${unitData.name} diperbarui di Cloud Firestore.`);
       } else {
         const id = 'unit-' + (unitData.code?.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || Date.now());
@@ -1306,15 +1331,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           name: unitData.name || 'Satuan Baru',
           symbol: unitData.symbol || 'U',
           description: unitData.description || '',
-          isActive: true,
+          isActive: unitData.isActive !== false,
         };
-        await setDoc(doc(db, 'units', id), newU);
+        await setDoc(doc(db, 'units', id), sanitizeFirestoreDoc(newU));
         showToast('success', 'Satuan Ditambahkan', `Satuan ${newU.name} (${newU.symbol}) berhasil dibuat di Cloud Firestore.`);
       }
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: saveUnit]', err);
-      showToast('error', 'Gagal Menyimpan Satuan', err.message);
+      const errMsg = err.code === 'permission-denied'
+        ? 'Izin tidak mencukupi untuk menyimpan satuan. Diperlukan role ADMIN atau LOGISTIK aktif.'
+        : err.message;
+      showToast('error', 'Gagal Menyimpan Satuan', errMsg);
       return false;
     }
   };
@@ -1400,14 +1428,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      await setDoc(doc(db, 'requestingUnits', id), newUnit);
+      await setDoc(doc(db, 'requestingUnits', id), sanitizeFirestoreDoc(newUnit));
       await logAudit('REQUESTING_UNIT_CREATED', 'Master Data', `Mendaftarkan Unit Pemohon baru: ${trimmedName} (${trimmedCode})`);
       showToast('success', 'Unit Pemohon Tersimpan', `Unit Pemohon ${trimmedName} (${trimmedCode}) berhasil ditambahkan ke Cloud Firestore.`);
       return { success: true, unit: newUnit };
     } catch (err: any) {
       console.error('[Firestore Error: addRequestingUnit]', err);
-      showToast('error', 'Gagal Menambahkan Unit Pemohon', err.message || 'Kesalahan saat menyimpan ke database.');
-      return { success: false, message: err.message || 'Gagal menyimpan ke Firestore.' };
+      const errMsg = err.code === 'permission-denied'
+        ? 'Izin tidak mencukupi untuk menambah Unit Pemohon. Diperlukan role ADMIN atau LOGISTIK aktif.'
+        : (err.message || 'Kesalahan saat menyimpan ke database.');
+      showToast('error', 'Gagal Menambahkan Unit Pemohon', errMsg);
+      return { success: false, message: errMsg };
     }
   };
 
@@ -1466,14 +1497,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      await updateDoc(doc(db, 'requestingUnits', id), merged);
+      await updateDoc(doc(db, 'requestingUnits', id), sanitizeFirestoreDoc(merged));
       await logAudit('REQUESTING_UNIT_UPDATED', 'Master Data', `Memperbarui Unit Pemohon: ${trimmedName} (${trimmedCode})`);
       showToast('success', 'Perubahan Tersimpan', `Unit Pemohon ${trimmedName} berhasil diperbarui di Cloud Firestore.`);
       return { success: true };
     } catch (err: any) {
       console.error('[Firestore Error: updateRequestingUnit]', err);
-      showToast('error', 'Gagal Memperbarui Unit Pemohon', err.message || 'Kesalahan database.');
-      return { success: false, message: err.message || 'Gagal memperbarui ke Firestore.' };
+      const errMsg = err.code === 'permission-denied'
+        ? 'Izin tidak mencukupi untuk memperbarui Unit Pemohon. Diperlukan role ADMIN atau LOGISTIK aktif.'
+        : (err.message || 'Kesalahan database.');
+      showToast('error', 'Gagal Memperbarui Unit Pemohon', errMsg);
+      return { success: false, message: errMsg };
     }
   };
 
@@ -1554,7 +1588,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       if (supData.id) {
-        await updateDoc(doc(db, 'suppliers', supData.id), supData);
+        await updateDoc(doc(db, 'suppliers', supData.id), sanitizeFirestoreDoc(supData));
         showToast('success', 'Pemasok Disimpan', `Pemasok ${supData.name} berhasil diperbarui di Cloud Firestore.`);
       } else {
         const id = 'sup-' + (supData.code?.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || Date.now());
@@ -1568,13 +1602,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           address: supData.address || '-',
           isActive: true,
         };
-        await setDoc(doc(db, 'suppliers', id), newSup);
+        await setDoc(doc(db, 'suppliers', id), sanitizeFirestoreDoc(newSup));
         showToast('success', 'Pemasok Ditambahkan', `Pemasok ${newSup.name} berhasil didaftarkan di Cloud Firestore.`);
       }
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: saveSupplier]', err);
-      showToast('error', 'Gagal Menyimpan Pemasok', err.message);
+      const errMsg = err.code === 'permission-denied'
+        ? 'Izin tidak mencukupi untuk mengelola data pemasok. Diperlukan role ADMIN atau LOGISTIK aktif.'
+        : err.message;
+      showToast('error', 'Gagal Menyimpan Pemasok', errMsg);
       return false;
     }
   };
@@ -2739,7 +2776,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             name,
             locationName: name,
             type: row.locationType || 'Terminal',
-            parentLocationId: parentLoc ? parentLoc.id : null,
+            parentLocationId: parentLoc ? parentLoc.id : undefined,
             parentLocationName: parentLoc ? parentLoc.name : undefined,
             picName: row.personInCharge || 'Petugas',
             personInCharge: row.personInCharge || 'Petugas',
