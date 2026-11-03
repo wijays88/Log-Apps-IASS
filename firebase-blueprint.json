@@ -46,6 +46,57 @@
       },
       "required": ["code", "name", "type", "isActive"]
     },
+    "Category": {
+      "title": "Category",
+      "description": "Master Data Material Category",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "name"]
+    },
+    "Unit": {
+      "title": "Unit",
+      "description": "Master Data Unit of Measure (UoM)",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "symbol": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "name", "symbol"]
+    },
+    "RequestingUnit": {
+      "title": "RequestingUnit",
+      "description": "Master Data Unit Pemohon / User Division",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "division": { "type": "string" },
+        "contactPerson": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "name", "division"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Master Data Vendor / Supplier",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "contactPerson": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "name"]
+    },
     "InventoryItem": {
       "title": "InventoryItem",
       "description": "Inventory stock balance at a location",
@@ -120,9 +171,22 @@
         "opnameNumber": { "type": "string" },
         "opnameDate": { "type": "string" },
         "locationId": { "type": "string" },
-        "status": { "type": "string", "enum": ["DRAFT", "SUBMITTED", "APPROVED", "REJECTED"] }
+        "verificationStatus": { "type": "string", "enum": ["DRAFT", "PENDING_APPROVAL", "ADJUSTED", "REJECTED"] }
       },
-      "required": ["opnameNumber", "opnameDate", "locationId", "status"]
+      "required": ["opnameNumber", "opnameDate", "locationId", "verificationStatus"]
+    },
+    "ApprovalRequest": {
+      "title": "ApprovalRequest",
+      "description": "Approval request for stock adjustment or goods issue",
+      "type": "object",
+      "properties": {
+        "referenceId": { "type": "string" },
+        "referenceNumber": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] }
+      },
+      "required": ["referenceId", "referenceNumber", "type", "status"]
     },
     "AuditLog": {
       "title": "AuditLog",
@@ -137,7 +201,7 @@
         "module": { "type": "string" },
         "details": { "type": "string" }
       },
-      "required": ["timestamp", "userId", "action", "module", "details"]
+      "required": ["timestamp", "action", "module", "details"]
     }
   },
   "firestore": {
@@ -152,6 +216,22 @@
     "/locations/{locationId}": {
       "schema": { "$ref": "#/entities/Location" },
       "description": "Master Data Locations"
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Master Data Categories"
+    },
+    "/units/{unitId}": {
+      "schema": { "$ref": "#/entities/Unit" },
+      "description": "Master Data Units"
+    },
+    "/requestingUnits/{unitId}": {
+      "schema": { "$ref": "#/entities/RequestingUnit" },
+      "description": "Master Data Requesting Units"
+    },
+    "/suppliers/{supplierId}": {
+      "schema": { "$ref": "#/entities/Supplier" },
+      "description": "Master Data Suppliers"
     },
     "/inventory/{inventoryId}": {
       "schema": { "$ref": "#/entities/InventoryItem" },
@@ -172,6 +252,10 @@
     "/stockOpnames/{opnameId}": {
       "schema": { "$ref": "#/entities/StockOpname" },
       "description": "Stock opname counts"
+    },
+    "/approvals/{approvalId}": {
+      "schema": { "$ref": "#/entities/ApprovalRequest" },
+      "description": "System approval workflow records"
     },
     "/auditLogs/{logId}": {
       "schema": { "$ref": "#/entities/AuditLog" },

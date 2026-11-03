@@ -193,6 +193,12 @@ export interface GoodsIssue {
   approvedAt?: string;
 }
 
+export type TransferRejectionDisposition =
+  | 'RETURNED_TO_ORIGIN'
+  | 'DAMAGED_IN_TRANSIT'
+  | 'LOST_IN_TRANSIT'
+  | 'CANCELLED_BEFORE_DISPATCH';
+
 export interface StockTransfer {
   id: string;
   transferNumber: string; // TR-2026-XXXX
@@ -212,7 +218,9 @@ export interface StockTransfer {
   requesterUnitId?: string;
   sendingUser: string | null;
   receivingUser: string | null;
-  status: 'PENDING' | 'IN_TRANSIT' | 'COMPLETED' | 'REJECTED';
+  status: 'PENDING' | 'IN_TRANSIT' | 'COMPLETED' | 'REJECTED' | 'CANCELLED';
+  rejectionDisposition?: TransferRejectionDisposition;
+  rejectionReason?: string;
   notes: string;
   createdAt: string;
   dispatchedAt?: string;

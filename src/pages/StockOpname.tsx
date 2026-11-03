@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   ClipboardCheck,
@@ -10,22 +10,25 @@ import {
   Check,
   X,
   Lock,
-  ArrowRight,
-  ShieldAlert,
+  Loader2,
+  Layers,
+  Warehouse,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
 
 export const StockOpname: React.FC = () => {
   const {
     stockOpnames,
-    items,
-    locations,
+    inventory,
+    activeMaterials,
+    activeLocations,
     createStockOpname,
     approveOpnameAdjustment,
     rejectOpnameAdjustment,
     currentUser,
     can,
     showToast,
+    syncLoading,
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -33,29 +36,65 @@ export const StockOpname: React.FC = () => {
   const [rejectModalId, setRejectModalId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
-  // Form state
-  const [formData, setFormData] = useState({
-    locationId: locations[0]?.id || '',
-    itemId: items[0]?.id || '',
-    physicalQuantity: 0,
-    varianceReason: '',
-    notes: '',
-  });
+  // Form selection states
+  const [selectedLocationId, setSelectedLocationId] = useState<string>('');
+  const [selectedMaterialId, setSelectedMaterialId] = useState<string>('');
+  const [physicalQuantity, setPhysicalQuantity] = useState<number | string>(0);
+  const [varianceReason, setVarianceReason] = useState<string>('');
+  const [notes, setNotes] = useState<string>('');
 
-  const selectedLocItems = items.filter((it) => it.locationId === formData.locationId);
-  const selectedItem = selectedLocItems.find((it) => it.id === formData.itemId) || selectedLocItems[0];
-  const systemQty = selectedItem ? selectedItem.availableStock : 0;
-  const currentVariance = Number(formData.physicalQuantity) - systemQty;
+  // Synchronize default selections when active data loads or modal opens
+  useEffect(() => {
+    if (activeLocations.length > 0 && (!selectedLocationId || !activeLocations.some((l) => l.id === selectedLocationId))) {
+      setSelectedLocationId(activeLocations[0].id);
+    }
+  }, [activeLocations, selectedLocationId]);
 
-  const filteredOpnames = stockOpnames.filter((so) => {
-    return (
-      so.opnameNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      so.itemName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      so.locationName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      so.conductedBy.toLowerCase().includes(searchTerm.toLowerCase())
+  useEffect(() => {
+    if (activeMaterials.length > 0 && (!selectedMaterialId || !activeMaterials.some((m) => m.id === selectedMaterialId))) {
+      setSelectedMaterialId(activeMaterials[0].id);
+    }
+  }, [activeMaterials, selectedMaterialId]);
+
+  // Derived references from active Master Data
+  const selectedLocation = useMemo(() => {
+    return activeLocations.find((l) => l.id === selectedLocationId) || activeLocations[0] || null;
+  }, [activeLocations, selectedLocationId]);
+
+  const selectedMaterial = useMemo(() => {
+    return activeMaterials.find((m) => m.id === selectedMaterialId) || activeMaterials[0] || null;
+  }, [activeMaterials, selectedMaterialId]);
+
+  // Retrieve actual stock balance from Inventory for matching material & location
+  const currentInventory = useMemo(() => {
+    if (!selectedMaterial || !selectedLocation) return undefined;
+    return inventory.find(
+      (inv) =>
+        (inv.materialId === selectedMaterial.id || inv.itemId === selectedMaterial.id) &&
+        inv.locationId === selectedLocation.id
     );
-  });
+  }, [inventory, selectedMaterial, selectedLocation]);
+
+  // Real-time stock calculations
+  const systemQty = currentInventory ? Number(currentInventory.availableStock) || 0 : 0;
+  const currentUnit = selectedMaterial?.unit || 'Pcs';
+  const numericPhysQty = physicalQuantity === '' ? 0 : Number(physicalQuantity);
+  const currentVariance = numericPhysQty - systemQty;
+
+  const filteredOpnames = useMemo(() => {
+    const q = searchTerm.toLowerCase();
+    return stockOpnames.filter((so) => {
+      return (
+        so.opnameNumber.toLowerCase().includes(q) ||
+        so.itemName.toLowerCase().includes(q) ||
+        so.itemCode.toLowerCase().includes(q) ||
+        so.locationName.toLowerCase().includes(q) ||
+        so.conductedBy.toLowerCase().includes(q)
+      );
+    });
+  }, [stockOpnames, searchTerm]);
 
   const handleOpenModal = () => {
     const perm = can('CREATE_TRANSACTION');
@@ -63,44 +102,81 @@ export const StockOpname: React.FC = () => {
       showToast('error', 'Akses Ditolak', perm.reason || 'Peran Site Head hanya dapat melihat hasil stock opname.');
       return;
     }
+
+    if (activeLocations.length === 0) {
+      showToast('error', 'Master Data Kosong', 'Belum ada data Lokasi Gudang aktif. Tambahkan Lokasi terlebih dahulu.');
+      return;
+    }
+
+    if (activeMaterials.length === 0) {
+      showToast('error', 'Master Data Kosong', 'Belum ada data Material aktif. Tambahkan Material terlebih dahulu.');
+      return;
+    }
+
+    // Set initial defaults
+    if (!selectedLocationId && activeLocations[0]) {
+      setSelectedLocationId(activeLocations[0].id);
+    }
+    if (!selectedMaterialId && activeMaterials[0]) {
+      setSelectedMaterialId(activeMaterials[0].id);
+    }
+    setPhysicalQuantity(0);
+    setVarianceReason('');
+    setNotes('');
     setModalOpen(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!selectedItem) {
-      showToast('error', 'Validasi Gagal', 'Pilih item barang.');
+    if (!selectedLocation) {
+      showToast('error', 'Validasi Gagal', 'Pilih lokasi gudang opname.');
       return;
     }
 
-    if (formData.physicalQuantity < 0) {
-      showToast('error', 'Validasi Gagal', 'Kuantitas fisik tidak boleh negatif.');
+    if (!selectedMaterial) {
+      showToast('error', 'Validasi Gagal', 'Pilih material barang yang dihitung.');
       return;
     }
 
-    if (currentVariance !== 0 && !formData.varianceReason.trim()) {
-      showToast('error', 'Validasi Gagal', 'Alasan selisih wajib diisi jika terdapat perbedaan fisik dan sistem.');
+    if (numericPhysQty < 0) {
+      showToast('error', 'Validasi Gagal', 'Kuantitas fisik tidak boleh bernilai negatif.');
       return;
     }
 
-    const success = await createStockOpname({
-      locationId: formData.locationId,
-      itemId: selectedItem.id,
-      physicalQuantity: Number(formData.physicalQuantity),
-      varianceReason: formData.varianceReason,
-      notes: formData.notes,
-    });
+    if (currentVariance !== 0 && !varianceReason.trim()) {
+      showToast('error', 'Validasi Gagal', 'Alasan selisih wajib diisi jika terdapat perbedaan antara fisik dan saldo sistem.');
+      return;
+    }
 
-    if (success) {
-      setModalOpen(false);
-      setFormData({
-        locationId: locations[0]?.id || '',
-        itemId: items[0]?.id || '',
-        physicalQuantity: 0,
-        varianceReason: '',
-        notes: '',
+    setIsSubmitting(true);
+    try {
+      const success = await createStockOpname({
+        locationId: selectedLocation.id,
+        materialId: selectedMaterial.id,
+        itemId: selectedMaterial.id,
+        physicalQuantity: numericPhysQty,
+        varianceReason: varianceReason.trim(),
+        notes: notes.trim(),
       });
+
+      if (success) {
+        setModalOpen(false);
+        setPhysicalQuantity(0);
+        setVarianceReason('');
+        setNotes('');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleApprove = async (opnameId: string) => {
+    setActionLoadingId(opnameId);
+    try {
+      await approveOpnameAdjustment(opnameId);
+    } finally {
+      setActionLoadingId(null);
     }
   };
 
@@ -110,14 +186,27 @@ export const StockOpname: React.FC = () => {
       showToast('error', 'Validasi Gagal', 'Alasan penolakan wajib diisi.');
       return;
     }
-    await rejectOpnameAdjustment(rejectModalId, rejectReason);
-    setRejectModalId(null);
-    setRejectReason('');
+    setActionLoadingId(rejectModalId);
+    try {
+      await rejectOpnameAdjustment(rejectModalId, rejectReason.trim());
+      setRejectModalId(null);
+      setRejectReason('');
+    } finally {
+      setActionLoadingId(null);
+    }
   };
 
   return (
     <div className="space-y-6">
       <PermissionNotice moduleName="Stock Opname Fisik" />
+
+      {/* Sync Status Banner */}
+      {syncLoading && (
+        <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 text-blue-800 text-xs rounded-xl">
+          <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+          <span>Sinkronisasi data Master Data & Inventaris dengan Cloud Firestore sedang berjalan...</span>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -131,7 +220,7 @@ export const StockOpname: React.FC = () => {
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Pencatatan hasil hitung fisik gudang dan verifikasi selisih persediaan
+            Pencatatan hasil hitung fisik gudang dan verifikasi selisih persediaan terintegrasi Firestore
           </p>
         </div>
 
@@ -148,7 +237,8 @@ export const StockOpname: React.FC = () => {
           ) : (
             <button
               onClick={handleOpenModal}
-              className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-2"
+              disabled={syncLoading || activeMaterials.length === 0 || activeLocations.length === 0}
+              className="px-4 py-2 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white font-bold text-xs sm:text-sm shadow-sm transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Plus className="w-4 h-4" />
               <span>Input Hasil Opname</span>
@@ -157,13 +247,28 @@ export const StockOpname: React.FC = () => {
         </div>
       </div>
 
+      {/* Master Data Availability Warning */}
+      {!syncLoading && (activeMaterials.length === 0 || activeLocations.length === 0) && (
+        <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold">Master Data Belum Lengkap</div>
+            <p className="mt-0.5">
+              {activeLocations.length === 0 && 'Lokasi Gudang belum tersedia atau tidak ada yang berstatus aktif. '}
+              {activeMaterials.length === 0 && 'Material barang belum tersedia atau tidak ada yang berstatus aktif. '}
+              Silakan daftarkan master data aktif pada modul <strong>Master Data</strong> terlebih dahulu.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Search */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
         <div className="relative max-w-md">
           <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
           <input
             type="text"
-            placeholder="Cari nomor opname, item, lokasi..."
+            placeholder="Cari nomor opname, kode item, nama barang, lokasi..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b]/30"
@@ -199,7 +304,7 @@ export const StockOpname: React.FC = () => {
                 </tr>
               ) : (
                 filteredOpnames.map((so) => {
-                  const hasDiscrepancy = so.variance !== 0;
+                  const isLoadingThis = actionLoadingId === so.id;
 
                   return (
                     <tr key={so.id} className="hover:bg-slate-50/70 transition">
@@ -212,7 +317,7 @@ export const StockOpname: React.FC = () => {
                       <td className="py-3.5 px-4 font-medium text-slate-700">
                         {so.locationName}
                       </td>
-                      <td className="py-3.5 px-4 font-semibold text-slate-900 max-w-[200px]">
+                      <td className="py-3.5 px-4 font-semibold text-slate-900 max-w-[220px]">
                         <div className="truncate" title={so.itemName}>
                           {so.itemName}
                         </div>
@@ -267,21 +372,26 @@ export const StockOpname: React.FC = () => {
                         {so.verifiedBy && (
                           <div className="text-[10px] text-emerald-700 font-medium">Verifikator: {so.verifiedBy}</div>
                         )}
+                        {so.adjustedAt && (
+                          <div className="text-[9px] text-slate-400 font-mono">{so.adjustedAt}</div>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 text-center">
                         {so.verificationStatus === 'PENDING_APPROVAL' && can('ADJUST_STOCK').allowed ? (
                           <div className="flex items-center justify-center gap-1.5">
                             <button
-                              onClick={() => approveOpnameAdjustment(so.id)}
-                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-2xs transition flex items-center gap-1"
+                              onClick={() => handleApprove(so.id)}
+                              disabled={isLoadingThis}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-2xs transition flex items-center gap-1 disabled:opacity-50"
                               title="Setujui Penyesuaian Saldo ke Fisik"
                             >
-                              <Check className="w-3 h-3" />
+                              {isLoadingThis ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                               <span>Adjust</span>
                             </button>
                             <button
                               onClick={() => setRejectModalId(so.id)}
-                              className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs border border-rose-200 transition"
+                              disabled={isLoadingThis}
+                              className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs border border-rose-200 transition disabled:opacity-50"
                               title="Tolak Penyesuaian"
                             >
                               <X className="w-3 h-3" />
@@ -289,7 +399,11 @@ export const StockOpname: React.FC = () => {
                           </div>
                         ) : (
                           <span className="text-[11px] text-slate-400">
-                            {so.verificationStatus === 'ADJUSTED' ? 'Telah Disesuaikan' : '-'}
+                            {so.verificationStatus === 'ADJUSTED'
+                              ? 'Telah Disesuaikan'
+                              : so.verificationStatus === 'REJECTED'
+                              ? 'Ditolak'
+                              : 'Menunggu Review'}
                           </span>
                         )}
                       </td>
@@ -319,7 +433,7 @@ export const StockOpname: React.FC = () => {
                     Input Hasil Perhitungan Fisik (Stock Opname)
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Sistem otomatis menghitung selisih (Fisik - Saldo Sistem)
+                    Integrasi Master Data & Saldo Inventaris Cloud Firestore
                   </p>
                 </div>
               </div>
@@ -334,57 +448,91 @@ export const StockOpname: React.FC = () => {
 
             <div className="py-4 space-y-3.5 text-xs">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Warehouse Location Dropdown */}
                 <div>
-                  <label className="text-slate-600 block mb-1 font-semibold">Lokasi Gudang Opname</label>
+                  <label className="text-slate-700 block mb-1 font-semibold">
+                    Lokasi Gudang Opname <span className="text-rose-500">*</span>
+                  </label>
                   <select
                     required
-                    value={formData.locationId}
-                    onChange={(e) => setFormData({ ...formData, locationId: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
+                    value={selectedLocationId}
+                    onChange={(e) => setSelectedLocationId(e.target.value)}
+                    disabled={syncLoading || activeLocations.length === 0}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white text-slate-800"
                   >
-                    {locations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.name}
-                      </option>
-                    ))}
+                    {activeLocations.length === 0 ? (
+                      <option value="">{syncLoading ? 'Memuat lokasi...' : 'Tidak ada lokasi aktif'}</option>
+                    ) : (
+                      activeLocations.map((loc) => (
+                        <option key={loc.id} value={loc.id}>
+                          {loc.name} {loc.code ? `(${loc.code})` : ''}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
 
+                {/* Material Dropdown */}
                 <div>
-                  <label className="text-slate-600 block mb-1 font-semibold">Item Barang</label>
+                  <label className="text-slate-700 block mb-1 font-semibold">
+                    Item Barang (Master Data) <span className="text-rose-500">*</span>
+                  </label>
                   <select
                     required
-                    value={selectedItem?.id || ''}
-                    onChange={(e) => setFormData({ ...formData, itemId: e.target.value })}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
+                    value={selectedMaterialId}
+                    onChange={(e) => setSelectedMaterialId(e.target.value)}
+                    disabled={syncLoading || activeMaterials.length === 0}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white text-slate-800"
                   >
-                    {selectedLocItems.map((it) => (
-                      <option key={it.id} value={it.id}>
-                        {it.itemCode} - {it.itemName} ({it.unit})
-                      </option>
-                    ))}
+                    {activeMaterials.length === 0 ? (
+                      <option value="">{syncLoading ? 'Memuat material...' : 'Tidak ada material aktif'}</option>
+                    ) : (
+                      activeMaterials.map((mat) => (
+                        <option key={mat.id} value={mat.id}>
+                          {mat.materialCode} - {mat.materialName} ({mat.unit})
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
               </div>
 
-              {/* System vs Physical Display */}
+              {/* Selected Material Summary Card */}
+              {selectedMaterial && (
+                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between text-[11px] text-slate-600">
+                  <div className="flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Kategori: <strong>{selectedMaterial.categoryName}</strong></span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Warehouse className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Satuan Ukur: <strong>{currentUnit}</strong></span>
+                  </div>
+                </div>
+              )}
+
+              {/* System vs Physical vs Variance Display */}
               <div className="grid grid-cols-3 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
                 <div>
-                  <div className="text-[11px] text-slate-500">Saldo di Sistem</div>
+                  <div className="text-[11px] text-slate-500 font-medium">Saldo di Sistem</div>
                   <div className="text-lg font-bold text-slate-800 font-mono mt-0.5">
-                    {systemQty} {selectedItem?.unit}
+                    {syncLoading ? (
+                      <span className="text-xs text-slate-400 font-sans">Memuat...</span>
+                    ) : (
+                      `${systemQty} ${currentUnit}`
+                    )}
                   </div>
                 </div>
 
                 <div>
                   <div className="text-[11px] text-slate-500 font-semibold">Input Fisik Aktual</div>
                   <div className="text-lg font-bold text-indigo-900 font-mono mt-0.5">
-                    {formData.physicalQuantity} {selectedItem?.unit}
+                    {numericPhysQty} {currentUnit}
                   </div>
                 </div>
 
                 <div>
-                  <div className="text-[11px] text-slate-500">Selisih (Variance)</div>
+                  <div className="text-[11px] text-slate-500 font-medium">Selisih (Variance)</div>
                   <div
                     className={`text-lg font-extrabold font-mono mt-0.5 ${
                       currentVariance === 0
@@ -394,52 +542,76 @@ export const StockOpname: React.FC = () => {
                         : 'text-rose-700'
                     }`}
                   >
-                    {currentVariance > 0 ? `+${currentVariance}` : currentVariance} {selectedItem?.unit}
+                    {currentVariance > 0 ? `+${currentVariance}` : currentVariance} {currentUnit}
                   </div>
                 </div>
               </div>
 
+              {/* Physical Quantity Input */}
               <div>
-                <label className="text-slate-600 block mb-1 font-semibold">Kuantitas Fisik Terhitung</label>
+                <label className="text-slate-700 block mb-1 font-semibold">
+                  Kuantitas Fisik Terhitung <span className="text-rose-500">*</span>
+                </label>
                 <input
                   type="number"
                   min="0"
+                  step="any"
                   required
-                  value={formData.physicalQuantity}
-                  onChange={(e) => setFormData({ ...formData, physicalQuantity: Number(e.target.value) })}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] font-mono font-bold text-base"
+                  value={physicalQuantity}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setPhysicalQuantity(val === '' ? '' : Number(val));
+                  }}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] font-mono font-bold text-base text-slate-900 bg-white"
+                  placeholder="0"
                 />
               </div>
 
-              {currentVariance !== 0 && (
+              {/* Reason Input (Mandatory if Variance != 0) */}
+              {currentVariance !== 0 ? (
                 <div>
-                  <label className="text-slate-600 block mb-1 font-semibold text-rose-800">
-                    Alasan Perbedaan Fisik vs Sistem (Wajib)
+                  <label className="block mb-1 font-semibold text-rose-800">
+                    Alasan Perbedaan Fisik vs Sistem <span className="text-rose-500">*</span> (Wajib Diisi)
                   </label>
                   <textarea
                     rows={2}
                     required
-                    placeholder="Contoh: Ditemukan kemasan pecah, tercecer saat bongkar palet, atau tertinggal peminjaman maintenance..."
-                    value={formData.varianceReason}
-                    onChange={(e) => setFormData({ ...formData, varianceReason: e.target.value })}
-                    className="w-full px-3 py-2 border border-rose-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500 bg-rose-50/30"
+                    placeholder="Contoh: Ditemukan kemasan pecah, salah hitung saat penerimaan, tercecer saat pembongkaran, dll."
+                    value={varianceReason}
+                    onChange={(e) => setVarianceReason(e.target.value)}
+                    className="w-full px-3 py-2 border border-rose-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500 bg-rose-50/40 text-slate-800 text-xs"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="text-slate-600 block mb-1 font-semibold">
+                    Keterangan Pemeriksaan (Opsional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Fisik dan sistem cocok sesuai jadwal audit..."
+                    value={varianceReason}
+                    onChange={(e) => setVarianceReason(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-slate-800"
                   />
                 </div>
               )}
 
+              {/* Inspection Notes */}
               <div>
-                <label className="text-slate-600 block mb-1 font-semibold">Catatan Pemeriksaan</label>
+                <label className="text-slate-600 block mb-1 font-semibold">Catatan Tim Pemeriksa</label>
                 <input
                   type="text"
-                  placeholder="Nomor tim opname, waktu audit fisik, dll..."
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b]"
+                  placeholder="Nomor tim opname, waktu audit fisik, nomor berita acara..."
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] text-slate-800"
                 />
               </div>
 
+              {/* Business Rule Notice */}
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-900 leading-relaxed">
-                <span className="font-bold">Ketentuan Bisnis (Aturan 8):</span> Jika terdapat selisih fisik, saldo sistem tidak langsung berubah sampai Administrator meninjau dan menyetujui transaksi penyesuaian (Adjustment).
+                <span className="font-bold">Ketentuan Tata Kelola:</span> Hasil stock opname disimpan dengan status <strong>Menunggu Persetujuan</strong>. Saldo persediaan di sistem tidak langsung berubah hingga Administrator menyetujui penyesuaian (Adjustment).
               </div>
             </div>
 
@@ -453,10 +625,11 @@ export const StockOpname: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition disabled:opacity-50"
+                disabled={isSubmitting || syncLoading || !selectedLocation || !selectedMaterial}
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition disabled:opacity-50 flex items-center gap-1.5"
               >
-                {isSubmitting ? 'Menyimpan...' : 'Simpan Hasil Opname'}
+                {isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isSubmitting ? 'Menyimpan...' : 'Simpan Hasil Opname'}</span>
               </button>
             </div>
           </form>
@@ -494,10 +667,12 @@ export const StockOpname: React.FC = () => {
               </button>
               <button
                 type="button"
+                disabled={actionLoadingId !== null}
                 onClick={handleConfirmReject}
-                className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white font-bold hover:bg-rose-700"
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white font-bold hover:bg-rose-700 disabled:opacity-50 flex items-center gap-1"
               >
-                Konfirmasi Tolak
+                {actionLoadingId && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Konfirmasi Tolak</span>
               </button>
             </div>
           </div>

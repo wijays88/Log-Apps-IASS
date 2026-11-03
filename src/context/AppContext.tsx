@@ -17,6 +17,7 @@ import {
   updateDoc,
   deleteDoc,
   writeBatch,
+  runTransaction,
   onSnapshot,
   query,
 } from 'firebase/firestore';
@@ -43,6 +44,7 @@ import {
   AuditLog,
   SystemSettings,
   ExcelImportValidationError,
+  TransferRejectionDisposition,
 } from '../types';
 import {
   INITIAL_USERS,
@@ -211,7 +213,8 @@ interface AppContextType {
     requesterUnitId?: string;
     notes?: string;
   }) => Promise<boolean>;
-  receiveStockTransfer: (transferId: string) => Promise<boolean>;
+  receiveStockTransfer: (transferId: string, notes?: string) => Promise<boolean>;
+  rejectStockTransfer: (transferId: string, reason: string, disposition?: TransferRejectionDisposition) => Promise<boolean>;
 
   createStockOpname: (opname: {
     locationId: string;
@@ -540,10 +543,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [currentUser?.id]);
 
   // Derived active dropdown lists (Rule: Inactive master entities cannot be selected in new transactions)
-  const activeMaterials = useMemo(() => materials.filter((m) => m.isActive), [materials]);
-  const activeLocations = useMemo(() => locations.filter((l) => l.isActive), [locations]);
-  const activeCategories = useMemo(() => categories.filter((c) => c.isActive), [categories]);
-  const activeUnits = useMemo(() => units.filter((u) => u.isActive), [units]);
+  const activeMaterials = useMemo(() => materials.filter((m) => m.isActive !== false), [materials]);
+  const activeLocations = useMemo(() => locations.filter((l) => l.isActive !== false), [locations]);
+  const activeCategories = useMemo(() => categories.filter((c) => c.isActive !== false), [categories]);
+  const activeUnits = useMemo(() => units.filter((u) => u.isActive !== false), [units]);
   const activeRequestingUnits = useMemo(() => requestingUnits.filter((u) => u.isActive !== false), [requestingUnits]);
   const activeSuppliers = useMemo(() => suppliers.filter((s) => s.isActive !== false), [suppliers]);
 
@@ -2011,7 +2014,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // ----------------------------------------------------
-  // STOCK TRANSFER (Cloud Firestore Authoritative)
+  // STOCK TRANSFER (Cloud Firestore Transaction Authoritative)
   // ----------------------------------------------------
   const createStockTransfer = async (data: {
     originLocationId: string;
@@ -2029,29 +2032,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
+    if (!data.originLocationId || !data.destinationLocationId) {
+      showToast('error', 'Validasi Gagal', 'Pilih lokasi gudang asal dan gudang tujuan.');
+      return false;
+    }
+
     if (data.originLocationId === data.destinationLocationId) {
       showToast('error', 'Validasi Gagal', 'Lokasi asal dan tujuan tidak boleh sama.');
       return false;
     }
 
-    const targetMatId = data.materialId || data.itemId;
-    const material = materials.find((m) => m.id === targetMatId);
-    if (!material || !material.isActive) {
-      showToast('error', 'Material Tidak Valid', 'Material tidak aktif.');
-      return false;
-    }
-
-    const originBalance = inventory.find(
-      (b) => b.materialId === material.id && b.locationId === data.originLocationId
-    );
-
-    if (!originBalance || originBalance.availableStock < data.quantity) {
-      showToast('error', 'Stok Asal Tidak Cukup', `Stok di lokasi asal hanya ${originBalance ? originBalance.availableStock : 0} ${material.unit}.`);
-      return false;
-    }
-
     const originLoc = locations.find((l) => l.id === data.originLocationId);
+    if (!originLoc || !originLoc.isActive) {
+      showToast('error', 'Lokasi Asal Tidak Valid', 'Gudang asal tidak ditemukan atau berstatus non-aktif.');
+      return false;
+    }
+
     const destLoc = locations.find((l) => l.id === data.destinationLocationId);
+    if (!destLoc || !destLoc.isActive) {
+      showToast('error', 'Lokasi Tujuan Tidak Valid', 'Gudang tujuan tidak ditemukan atau berstatus non-aktif.');
+      return false;
+    }
+
+    const targetMatId = data.materialId || data.itemId;
+    if (!targetMatId) {
+      showToast('error', 'Validasi Gagal', 'Pilih material barang dari Master Data.');
+      return false;
+    }
+
+    const material = materials.find((m) => m.id === targetMatId || m.materialId === targetMatId);
+    if (!material || !material.isActive) {
+      showToast('error', 'Material Tidak Valid', 'Material tidak ditemukan atau berstatus non-aktif.');
+      return false;
+    }
+
+    const transferQty = Number(data.quantity);
+    if (isNaN(transferQty) || transferQty <= 0) {
+      showToast('error', 'Validasi Gagal', 'Kuantitas transfer harus berupa angka lebih dari 0.');
+      return false;
+    }
+
+    const originBalLocal = inventory.find(
+      (b) => (b.materialId === material.id || b.itemId === material.id) && b.locationId === originLoc.id
+    );
+    const originBalId = originBalLocal ? originBalLocal.id : `bal-${material.id}-${originLoc.id}`;
+    const originBalRef = doc(db, 'inventory', originBalId);
+
     const nextNumber = 'TR-2026-' + (200 + stockTransfers.length + 1);
     const now = getJakartaTimestamp();
     const transferId = 'tr-' + Date.now();
@@ -2060,126 +2086,273 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: transferId,
       transferNumber: nextNumber,
       requestDate: now.split(' ')[0],
-      originLocationId: data.originLocationId,
-      originLocationName: originLoc ? originLoc.name : 'Gudang Asal',
-      destinationLocationId: data.destinationLocationId,
-      destinationLocationName: destLoc ? destLoc.name : 'Gudang Tujuan',
+      originLocationId: originLoc.id,
+      originLocationName: originLoc.name,
+      destinationLocationId: destLoc.id,
+      destinationLocationName: destLoc.name,
       itemId: material.id,
       itemCode: material.materialCode,
       itemName: material.materialName,
-      variantValue: material.variantValue,
-      quantity: data.quantity,
+      variantValue: material.variantValue || '',
+      quantity: transferQty,
       unit: material.unit,
       requestingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`,
-      requestingUnit: data.requestingUnit,
-      requesterUnitId: data.requesterUnitId,
+      requestingUnit: data.requestingUnit || '',
+      requesterUnitId: data.requesterUnitId || '',
       sendingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`,
       receivingUser: null,
       status: 'IN_TRANSIT',
-      notes: data.notes || '',
+      notes: data.notes?.trim() || '',
       createdAt: now,
       dispatchedAt: now,
     };
 
     try {
-      // 1. Authoritative write of stock transfer
-      await setDoc(doc(db, 'stockTransfers', transferId), newTransfer);
+      await runTransaction(db, async (transaction) => {
+        const originSnap = await transaction.get(originBalRef);
+        if (!originSnap.exists()) {
+          throw new Error(`Material ${material.materialName} belum memiliki saldo stok di ${originLoc.name}.`);
+        }
 
-      // 2. Deduct stock from origin location (In-Transit)
-      const newOut = originBalance.qtyOut + data.quantity;
-      const newAvailable = originBalance.openingStock + originBalance.qtyIn - newOut;
-      await updateDoc(doc(db, 'inventory', originBalance.id), {
-        qtyOut: newOut,
-        availableStock: newAvailable,
-        lastTransactionDate: now.split(' ')[0],
+        const originData = originSnap.data() as InventoryBalance;
+        const currentAvailable = Number(originData.availableStock) || 0;
+        if (currentAvailable < transferQty) {
+          throw new Error(`Stok tersedia di ${originLoc.name} tidak mencukupi saat proses pengiriman. Sisa: ${currentAvailable} ${material.unit}.`);
+        }
+
+        const newOut = (Number(originData.qtyOut) || 0) + transferQty;
+        const newAvailable = (Number(originData.openingStock) || 0) + (Number(originData.qtyIn) || 0) - newOut;
+
+        transaction.update(originBalRef, sanitizeFirestoreDoc({
+          qtyOut: newOut,
+          availableStock: newAvailable,
+          lastTransactionDate: now.split(' ')[0],
+        }));
+
+        const transferDocRef = doc(db, 'stockTransfers', transferId);
+        transaction.set(transferDocRef, sanitizeFirestoreDoc(newTransfer));
       });
 
       await logAudit(
         'TRANSFER_CREATED',
         'Transfer Stok',
-        `Membuat transfer ${data.quantity} ${material.unit} ${material.materialName} (${nextNumber}) dari ${newTransfer.originLocationName} ke ${newTransfer.destinationLocationName}`
+        `Membuat transfer ${transferQty} ${material.unit} ${material.materialName} (${nextNumber}) dari ${newTransfer.originLocationName} ke ${newTransfer.destinationLocationName}. Stok gudang asal terpotong, status In-Transit.`
       );
-      showToast('success', 'Transfer Diberangkatkan', `Nomor Transfer: ${nextNumber}. Status: In-Transit.`);
+      showToast('success', 'Transfer Diberangkatkan', `Nomor Transfer: ${nextNumber}. Status: In-Transit. Stok di ${originLoc.name} telah dipotong.`);
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: createStockTransfer]', err);
-      showToast('error', 'Gagal Membuat Transfer Stok', err.message);
+      showToast('error', 'Gagal Membuat Transfer Stok', err.message || 'Terjadi kesalahan transaksi.');
       return false;
     }
   };
 
-  const receiveStockTransfer = async (transferId: string): Promise<boolean> => {
+  const receiveStockTransfer = async (transferId: string, receiverNotes?: string): Promise<boolean> => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
       return false;
     }
 
-    const transfer = stockTransfers.find((t) => t.id === transferId);
-    if (!transfer || transfer.status !== 'IN_TRANSIT') {
-      showToast('error', 'Status Tidak Valid', 'Hanya transfer berstatus In-Transit yang dapat diterima.');
-      return false;
-    }
-
+    const transferRef = doc(db, 'stockTransfers', transferId);
     const now = getJakartaTimestamp();
 
     try {
-      // 1. Mark transfer completed
-      await updateDoc(doc(db, 'stockTransfers', transferId), {
-        status: 'COMPLETED',
-        receivingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`,
-        receivedAt: now,
+      await runTransaction(db, async (transaction) => {
+        const transferSnap = await transaction.get(transferRef);
+        if (!transferSnap.exists()) {
+          throw new Error('Dokumen transfer stok tidak ditemukan.');
+        }
+
+        const transfer = transferSnap.data() as StockTransfer;
+        if (transfer.status !== 'IN_TRANSIT') {
+          throw new Error(`Transfer ${transfer.transferNumber} sudah berstatus ${transfer.status} dan tidak dapat diterima ulang.`);
+        }
+
+        const destBalLocal = inventory.find(
+          (b) => (b.materialId === transfer.itemId || b.itemId === transfer.itemId) && b.locationId === transfer.destinationLocationId
+        );
+        const destBalId = destBalLocal ? destBalLocal.id : `bal-${transfer.itemId}-${transfer.destinationLocationId}`;
+        const destBalRef = doc(db, 'inventory', destBalId);
+        const destSnap = await transaction.get(destBalRef);
+
+        if (destSnap.exists()) {
+          const destData = destSnap.data() as InventoryBalance;
+          const newIn = (Number(destData.qtyIn) || 0) + Number(transfer.quantity);
+          const newAvailable = (Number(destData.openingStock) || 0) + newIn - (Number(destData.qtyOut) || 0);
+
+          transaction.update(destBalRef, sanitizeFirestoreDoc({
+            qtyIn: newIn,
+            availableStock: newAvailable,
+            lastTransactionDate: now.split(' ')[0],
+          }));
+        } else {
+          const material = materials.find((m) => m.id === transfer.itemId);
+          const newBal: InventoryBalance = {
+            id: destBalId,
+            materialId: transfer.itemId,
+            itemId: transfer.itemId,
+            materialCode: transfer.itemCode,
+            itemCode: transfer.itemCode,
+            materialName: transfer.itemName,
+            itemName: transfer.itemName,
+            categoryId: material?.categoryId || 'cat-gen',
+            categoryName: material?.categoryName || 'General',
+            unit: transfer.unit,
+            locationId: transfer.destinationLocationId,
+            locationName: transfer.destinationLocationName,
+            variantValue: transfer.variantValue || '',
+            openingStock: 0,
+            qtyIn: Number(transfer.quantity),
+            qtyOut: 0,
+            availableStock: Number(transfer.quantity),
+            minimumStock: material?.minimumStock || 0,
+            reorderPoint: material?.reorderPoint || 0,
+            lastTransactionDate: now.split(' ')[0],
+            unitCost: material?.unitCost || 0,
+          };
+          transaction.set(destBalRef, sanitizeFirestoreDoc(newBal));
+        }
+
+        const updateData: Partial<StockTransfer> = {
+          status: 'COMPLETED',
+          receivingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`,
+          receivedAt: now,
+        };
+        if (receiverNotes?.trim()) {
+          updateData.notes = transfer.notes ? `${transfer.notes} | Penerima: ${receiverNotes.trim()}` : receiverNotes.trim();
+        }
+
+        transaction.update(transferRef, sanitizeFirestoreDoc(updateData));
       });
 
-      // 2. Increase stock at destination location
-      const existing = inventory.find(
-        (b) => b.materialId === transfer.itemId && b.locationId === transfer.destinationLocationId
-      );
-
-      if (existing) {
-        const newIn = existing.qtyIn + transfer.quantity;
-        const newAvailable = existing.openingStock + newIn - existing.qtyOut;
-        await updateDoc(doc(db, 'inventory', existing.id), {
-          qtyIn: newIn,
-          availableStock: newAvailable,
-          lastTransactionDate: now.split(' ')[0],
-        });
-      } else {
-        const material = materials.find((m) => m.id === transfer.itemId);
-        const balId = `bal-${transfer.itemId}-${transfer.destinationLocationId}`;
-        const newBal: InventoryBalance = {
-          id: balId,
-          materialId: transfer.itemId,
-          materialCode: transfer.itemCode,
-          materialName: transfer.itemName,
-          categoryId: material?.categoryId || 'cat-tissue',
-          categoryName: material?.categoryName || 'General',
-          unit: transfer.unit,
-          locationId: transfer.destinationLocationId,
-          locationName: transfer.destinationLocationName,
-          variantValue: transfer.variantValue,
-          openingStock: 0,
-          qtyIn: transfer.quantity,
-          qtyOut: 0,
-          availableStock: transfer.quantity,
-          minimumStock: material?.minimumStock || 10,
-          reorderPoint: material?.reorderPoint || 20,
-          lastTransactionDate: now.split(' ')[0],
-          unitCost: material?.unitCost,
-        };
-        await setDoc(doc(db, 'inventory', balId), newBal);
-      }
-
+      const updatedTr = stockTransfers.find((t) => t.id === transferId);
       await logAudit(
         'TRANSFER_RECEIVED',
         'Transfer Stok',
-        `Konfirmasi terima transfer ${transfer.transferNumber} di ${transfer.destinationLocationName}`
+        `Konfirmasi terima transfer ${updatedTr?.transferNumber || transferId} oleh ${currentUser!.fullName}. Stok bertambah di ${updatedTr?.destinationLocationName || 'Gudang Tujuan'}.`
       );
-      showToast('success', 'Transfer Selesai', `Stok barang telah ditambahkan ke ${transfer.destinationLocationName}.`);
+
+      showToast('success', 'Transfer Diterima (Selesai)', `Kuantitas telah ditambahkan ke saldo inventaris gudang tujuan.`);
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: receiveStockTransfer]', err);
-      showToast('error', 'Gagal Mengonfirmasi Penerimaan Transfer', err.message);
+      showToast('error', 'Gagal Mengonfirmasi Penerimaan Transfer', err.message || 'Terjadi kesalahan transaksi.');
+      return false;
+    }
+  };
+
+  const rejectStockTransfer = async (
+    transferId: string,
+    reason: string,
+    disposition: TransferRejectionDisposition = 'RETURNED_TO_ORIGIN'
+  ): Promise<boolean> => {
+    const perm = can('CREATE_TRANSACTION');
+    if (!perm.allowed) {
+      showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
+      return false;
+    }
+
+    if (!reason?.trim()) {
+      showToast('error', 'Validasi Gagal', 'Alasan penolakan / pembatalan transfer wajib diisi.');
+      return false;
+    }
+
+    const transferRef = doc(db, 'stockTransfers', transferId);
+    const now = getJakartaTimestamp();
+
+    try {
+      let loggedTransferNumber = transferId;
+      let loggedOriginName = 'Gudang Asal';
+
+      await runTransaction(db, async (transaction) => {
+        // Step 1: Read transfer document
+        const transferSnap = await transaction.get(transferRef);
+        if (!transferSnap.exists()) {
+          throw new Error('Dokumen transfer stok tidak ditemukan di database.');
+        }
+
+        const transfer = transferSnap.data() as StockTransfer;
+        loggedTransferNumber = transfer.transferNumber || transferId;
+        loggedOriginName = transfer.originLocationName || 'Gudang Asal';
+
+        if (transfer.status !== 'IN_TRANSIT' && transfer.status !== 'PENDING') {
+          throw new Error(`Transfer ini sudah berstatus ${transfer.status} dan tidak dapat diubah lagi.`);
+        }
+
+        // Inventory safety logic:
+        // ONLY restore stock to origin if items physically return intact to the source warehouse
+        // or if transfer is cancelled prior to physical dispatch.
+        // For DAMAGED_IN_TRANSIT or LOST_IN_TRANSIT: source warehouse already physically dispatched them,
+        // so restoring stock would create a phantom inventory surplus!
+        const shouldRestoreToOrigin = disposition === 'RETURNED_TO_ORIGIN' || disposition === 'CANCELLED_BEFORE_DISPATCH';
+
+        let originBalRef: any = null;
+        let originSnap: any = null;
+
+        // Step 2: Read origin balance if stock restoration is required
+        if (shouldRestoreToOrigin) {
+          const originBalLocal = inventory.find(
+            (b) => (b.materialId === transfer.itemId || b.itemId === transfer.itemId) && b.locationId === transfer.originLocationId
+          );
+          const originBalId = originBalLocal ? originBalLocal.id : `bal-${transfer.itemId}-${transfer.originLocationId}`;
+          originBalRef = doc(db, 'inventory', originBalId);
+          originSnap = await transaction.get(originBalRef);
+        }
+
+        // Step 3: Writes (Strictly after all reads)
+        if (shouldRestoreToOrigin && originBalRef && originSnap?.exists()) {
+          const originData = originSnap.data() as InventoryBalance;
+          const restoredOut = Math.max(0, (Number(originData.qtyOut) || 0) - Number(transfer.quantity));
+          const restoredAvailable = (Number(originData.openingStock) || 0) + (Number(originData.qtyIn) || 0) - restoredOut;
+
+          transaction.update(originBalRef, sanitizeFirestoreDoc({
+            qtyOut: restoredOut,
+            availableStock: restoredAvailable,
+            lastTransactionDate: now.split(' ')[0],
+          }));
+        }
+
+        const newStatus = disposition === 'CANCELLED_BEFORE_DISPATCH' ? 'CANCELLED' : 'REJECTED';
+        const dispositionLabels: Record<TransferRejectionDisposition, string> = {
+          RETURNED_TO_ORIGIN: 'Barang Kembali ke Gudang Asal',
+          DAMAGED_IN_TRANSIT: 'Barang Rusak di Transit (Write-Off)',
+          LOST_IN_TRANSIT: 'Barang Hilang di Transit (Write-Off)',
+          CANCELLED_BEFORE_DISPATCH: 'Dibatalkan Sebelum Dispatch',
+        };
+
+        const notesSuffix = `[${dispositionLabels[disposition]}] ${reason.trim()}`;
+
+        transaction.update(transferRef, sanitizeFirestoreDoc({
+          status: newStatus,
+          rejectionDisposition: disposition,
+          rejectionReason: reason.trim(),
+          receivingUser: `${currentUser!.fullName} (${currentUser!.employeeId}) [${disposition}]`,
+          receivedAt: now,
+          notes: transfer.notes ? `${transfer.notes} | ${notesSuffix}` : notesSuffix,
+        }));
+      });
+
+      const stockMovementSummary =
+        disposition === 'RETURNED_TO_ORIGIN' || disposition === 'CANCELLED_BEFORE_DISPATCH'
+          ? `Stok dipulihkan ke gudang asal (${loggedOriginName}).`
+          : `Stok TIDAK dipulihkan ke gudang asal (Disposisi: ${disposition} / Kerugian transit dicatat).`;
+
+      await logAudit(
+        'TRANSFER_REJECTED',
+        'Transfer Stok',
+        `Transfer ${loggedTransferNumber} ditolak/dibatalkan oleh ${currentUser!.fullName}. Disposisi: ${disposition}. ${stockMovementSummary} Alasan: ${reason.trim()}`
+      );
+
+      showToast(
+        'warning',
+        'Status Transfer Diperbarui',
+        `${stockMovementSummary}`
+      );
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: rejectStockTransfer]', err);
+      showToast('error', 'Gagal Memproses Penolakan Transfer', err.message || 'Terjadi kesalahan transaksi.');
       return false;
     }
   };
@@ -2201,16 +2374,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    const targetMatId = data.materialId || data.itemId;
-    const material = materials.find((m) => m.id === targetMatId);
-    if (!material) return false;
+    if (data.physicalQuantity === undefined || data.physicalQuantity === null || Number(data.physicalQuantity) < 0) {
+      showToast('error', 'Validasi Gagal', 'Kuantitas fisik tidak boleh bernilai negatif.');
+      return false;
+    }
 
+    const targetMatId = data.materialId || data.itemId;
+    if (!targetMatId) {
+      showToast('error', 'Validasi Gagal', 'Material barang wajib dipilih.');
+      return false;
+    }
+
+    const material = materials.find((m) => m.id === targetMatId || m.materialId === targetMatId);
+    if (!material || !material.isActive) {
+      showToast('error', 'Material Tidak Valid', 'Material tidak ditemukan atau berstatus non-aktif pada Master Data.');
+      return false;
+    }
+
+    const location = locations.find((l) => l.id === data.locationId);
+    if (!location || !location.isActive) {
+      showToast('error', 'Lokasi Tidak Valid', 'Lokasi gudang tidak ditemukan atau berstatus non-aktif pada Master Data.');
+      return false;
+    }
+
+    // Retrieve authoritative stock balance from inventory
     const balance = inventory.find(
-      (b) => b.materialId === material.id && b.locationId === data.locationId
+      (b) => (b.materialId === material.id || b.itemId === material.id) && b.locationId === location.id
     );
-    const systemQty = balance ? balance.availableStock : 0;
-    const variance = data.physicalQuantity - systemQty;
-    const requiresApproval = variance !== 0;
+    const systemQty = balance ? Number(balance.availableStock) || 0 : 0;
+    const physQty = Number(data.physicalQuantity);
+    const variance = physQty - systemQty;
+
+    if (variance !== 0 && !data.varianceReason?.trim()) {
+      showToast('error', 'Validasi Gagal', 'Alasan selisih wajib diisi jika terdapat perbedaan antara fisik dan saldo sistem.');
+      return false;
+    }
 
     const nextNumber = 'SO-2026-' + (40 + stockOpnames.length + 1);
     const now = getJakartaTimestamp();
@@ -2221,66 +2419,63 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: opnameId,
       opnameNumber: nextNumber,
       opnameDate: now.split(' ')[0],
-      locationId: data.locationId,
-      locationName: balance ? balance.locationName : 'Gudang',
+      locationId: location.id,
+      locationName: location.name,
       itemId: material.id,
       itemCode: material.materialCode,
       itemName: material.materialName,
-      variantValue: material.variantValue,
+      variantValue: material.variantValue || '',
       unit: material.unit,
       systemQuantity: systemQty,
-      physicalQuantity: data.physicalQuantity,
+      physicalQuantity: physQty,
       variance,
-      varianceReason: data.varianceReason || 'Hasil pemeriksaan fisik',
-      verificationStatus: requiresApproval ? 'PENDING_APPROVAL' : 'ADJUSTED',
+      varianceReason: data.varianceReason?.trim() || 'Pemeriksaan fisik sesuai saldo sistem',
+      verificationStatus: 'PENDING_APPROVAL',
       conductedBy: `${currentUser!.fullName} (${currentUser!.employeeId})`,
-      notes: data.notes || '',
+      notes: data.notes?.trim() || '',
       createdAt: now,
     };
 
-    try {
-      await setDoc(doc(db, 'stockOpnames', opnameId), newOpname);
+    const newApproval: ApprovalRequest = {
+      id: approvalId,
+      type: 'STOCK_OPNAME_ADJUSTMENT',
+      referenceId: newOpname.id,
+      referenceNumber: nextNumber,
+      title: `Penyesuaian Opname ${material.materialName} (${variance >= 0 ? '+' : ''}${variance} ${material.unit})`,
+      requestingUser: currentUser!.fullName,
+      requestingEmployeeId: currentUser!.employeeId,
+      location: location.name,
+      submissionDate: now,
+      details: {
+        itemCode: material.materialCode,
+        itemName: material.materialName,
+        quantity: Math.abs(variance),
+        unit: material.unit,
+        reasonOrPurpose: data.varianceReason?.trim() || 'Hasil pemeriksaan fisik opname',
+        systemQuantity: systemQty,
+        physicalQuantity: physQty,
+        variance,
+        variantValue: material.variantValue || '',
+      },
+      status: 'PENDING',
+    };
 
-      if (requiresApproval) {
-        const newApproval: ApprovalRequest = {
-          id: approvalId,
-          type: 'STOCK_OPNAME_ADJUSTMENT',
-          referenceId: newOpname.id,
-          referenceNumber: nextNumber,
-          title: `Penyesuaian Opname ${material.materialName} (${variance > 0 ? '+' : ''}${variance} ${material.unit})`,
-          requestingUser: currentUser!.fullName,
-          requestingEmployeeId: currentUser!.employeeId,
-          location: newOpname.locationName,
-          submissionDate: now,
-          details: {
-            itemCode: material.materialCode,
-            itemName: material.materialName,
-            quantity: Math.abs(variance),
-            unit: material.unit,
-            reasonOrPurpose: data.varianceReason,
-            systemQuantity: systemQty,
-            physicalQuantity: data.physicalQuantity,
-            variance,
-          },
-          status: 'PENDING',
-        };
-        await setDoc(doc(db, 'approvals', approvalId), newApproval);
-      } else if (balance) {
-        // If variance is 0, update lastTransactionDate
-        await updateDoc(doc(db, 'inventory', balance.id), {
-          lastTransactionDate: now.split(' ')[0],
-        });
-      }
+    try {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'stockOpnames', opnameId), sanitizeFirestoreDoc(newOpname));
+      batch.set(doc(db, 'approvals', approvalId), sanitizeFirestoreDoc(newApproval));
+      await batch.commit();
 
       await logAudit(
         'OPNAME_RECORDED',
         'Stock Opname',
-        `Pencatatan opname ${nextNumber}: Sistem ${systemQty}, Fisik ${data.physicalQuantity}, Selisih ${variance} ${material.unit}.`
+        `Pencatatan opname ${nextNumber}: Sistem ${systemQty}, Fisik ${physQty}, Selisih ${variance} ${material.unit} di ${location.name}. Menunggu persetujuan Administrator.`
       );
+
       showToast(
-        requiresApproval ? 'warning' : 'success',
-        requiresApproval ? 'Opname Ada Selisih' : 'Opname Sesuai',
-        requiresApproval ? `Ditemukan selisih ${variance} ${material.unit}. Diteruskan ke Approval Center.` : 'Fisik dan sistem cocok.'
+        'warning',
+        'Stock Opname Tercatat',
+        `Nomor ${nextNumber} disimpan dengan status Menunggu Persetujuan. Saldo inventaris belum berubah sebelum disetujui Admin.`
       );
       return true;
     } catch (err: any) {
@@ -2293,54 +2488,104 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const approveOpnameAdjustment = async (opnameId: string): Promise<boolean> => {
     const perm = can('ADJUST_STOCK');
     if (!perm.allowed) {
-      showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Admin yang dapat memposting adjustment.');
+      showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Administrator yang berwenang menyetujui penyesuaian stock opname.');
       return false;
     }
 
-    const opname = stockOpnames.find((o) => o.id === opnameId);
-    if (!opname) return false;
-
+    const opnameRef = doc(db, 'stockOpnames', opnameId);
     const now = getJakartaTimestamp();
 
     try {
-      // 1. Authoritative update of stockOpnames
-      await updateDoc(doc(db, 'stockOpnames', opnameId), {
-        verificationStatus: 'ADJUSTED',
-        verifiedBy: `${currentUser!.fullName} (${currentUser!.employeeId})`,
-        adjustedAt: now,
+      await runTransaction(db, async (transaction) => {
+        const opnameSnap = await transaction.get(opnameRef);
+        if (!opnameSnap.exists()) {
+          throw new Error('Data Stock Opname tidak ditemukan di database.');
+        }
+
+        const opname = opnameSnap.data() as StockOpname;
+        if (opname.verificationStatus === 'ADJUSTED') {
+          throw new Error(`Stock Opname ${opname.opnameNumber} sudah pernah disetujui sebelumnya.`);
+        }
+        if (opname.verificationStatus === 'REJECTED') {
+          throw new Error(`Stock Opname ${opname.opnameNumber} sudah berstatus ditolak.`);
+        }
+
+        // 1. Authoritative adjustment of inventory balance exactly once
+        const balLocal = inventory.find(
+          (b) => (b.materialId === opname.itemId || b.itemId === opname.itemId) && b.locationId === opname.locationId
+        );
+        const balId = balLocal ? balLocal.id : `bal-${opname.itemId}-${opname.locationId}`;
+        const balRef = doc(db, 'inventory', balId);
+        const balSnap = await transaction.get(balRef);
+
+        if (balSnap.exists()) {
+          transaction.update(balRef, sanitizeFirestoreDoc({
+            availableStock: opname.physicalQuantity,
+            lastTransactionDate: now.split(' ')[0],
+          }));
+        } else {
+          const material = materials.find((m) => m.id === opname.itemId);
+          const newBalance: InventoryBalance = {
+            id: balId,
+            materialId: opname.itemId,
+            itemId: opname.itemId,
+            materialCode: opname.itemCode,
+            itemCode: opname.itemCode,
+            materialName: opname.itemName,
+            itemName: opname.itemName,
+            categoryId: material?.categoryId || 'cat-gen',
+            categoryName: material?.categoryName || 'General',
+            unit: opname.unit,
+            locationId: opname.locationId,
+            locationName: opname.locationName,
+            variantValue: opname.variantValue || '',
+            openingStock: 0,
+            qtyIn: opname.physicalQuantity,
+            qtyOut: 0,
+            availableStock: opname.physicalQuantity,
+            minimumStock: material?.minimumStock || 0,
+            reorderPoint: material?.reorderPoint || 0,
+            lastTransactionDate: now.split(' ')[0],
+            unitCost: material?.unitCost || 0,
+          };
+          transaction.set(balRef, sanitizeFirestoreDoc(newBalance));
+        }
+
+        // 2. Authoritative update of stockOpnames
+        transaction.update(opnameRef, sanitizeFirestoreDoc({
+          verificationStatus: 'ADJUSTED',
+          verifiedBy: `${currentUser!.fullName} (${currentUser!.employeeId})`,
+          adjustedAt: now,
+        }));
+
+        // 3. Authoritative update of approvals (if exists)
+        const app = approvals.find((a) => a.referenceId === opnameId && a.type === 'STOCK_OPNAME_ADJUSTMENT');
+        if (app) {
+          const appRef = doc(db, 'approvals', app.id);
+          transaction.update(appRef, sanitizeFirestoreDoc({
+            status: 'APPROVED',
+            actionBy: currentUser!.fullName,
+            actionDate: now,
+          }));
+        }
       });
 
-      // 2. Authoritative update of approvals
-      const app = approvals.find((a) => a.referenceId === opnameId && a.type === 'STOCK_OPNAME_ADJUSTMENT');
-      if (app) {
-        await updateDoc(doc(db, 'approvals', app.id), {
-          status: 'APPROVED',
-          actionBy: currentUser!.fullName,
-          actionDate: now,
-        });
-      }
-
-      // 3. Authoritative adjustment of inventory balance
-      const balance = inventory.find(
-        (b) => b.materialId === opname.itemId && b.locationId === opname.locationId
-      );
-      if (balance) {
-        await updateDoc(doc(db, 'inventory', balance.id), {
-          availableStock: opname.physicalQuantity,
-          lastTransactionDate: now.split(' ')[0],
-        });
-      }
-
+      const opname = stockOpnames.find((o) => o.id === opnameId);
       await logAudit(
         'OPNAME_ADJUSTMENT_POSTED',
-        'Approval Center',
-        `Menyetujui adjustment opname ${opname.opnameNumber}. Saldo baru: ${opname.physicalQuantity} ${opname.unit}.`
+        'Stock Opname',
+        `Administrator ${currentUser!.fullName} (${currentUser!.employeeId}) menyetujui penyesuaian opname ${opname?.opnameNumber || opnameId}. Saldo disesuaikan menjadi ${opname?.physicalQuantity || 0} ${opname?.unit || 'Pcs'}.`
       );
-      showToast('success', 'Penyesuaian Berhasil', `Saldo sistem telah disesuaikan dengan fisik (${opname.physicalQuantity} ${opname.unit}).`);
+
+      showToast(
+        'success',
+        'Penyesuaian Berhasil',
+        `Saldo inventaris telah diperbarui menjadi kuantitas fisik hasil opname.`
+      );
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: approveOpnameAdjustment]', err);
-      showToast('error', 'Gagal Memproses Adjustment Opname', err.message);
+      showToast('error', 'Gagal Memproses Adjustment Opname', err.message || 'Terjadi kesalahan transaksi.');
       return false;
     }
   };
@@ -2352,32 +2597,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    const opname = stockOpnames.find((o) => o.id === opnameId);
-    if (!opname) return false;
-
+    const opnameRef = doc(db, 'stockOpnames', opnameId);
     const now = getJakartaTimestamp();
+
     try {
-      await updateDoc(doc(db, 'stockOpnames', opnameId), {
-        verificationStatus: 'REJECTED',
-        notes: (opname.notes ? opname.notes + ' | ' : '') + `Ditolak Admin: ${reason}`,
+      await runTransaction(db, async (transaction) => {
+        const opnameSnap = await transaction.get(opnameRef);
+        if (!opnameSnap.exists()) {
+          throw new Error('Data Stock Opname tidak ditemukan.');
+        }
+
+        const opname = opnameSnap.data() as StockOpname;
+        if (opname.verificationStatus === 'ADJUSTED') {
+          throw new Error(`Stock Opname ${opname.opnameNumber} sudah pernah disetujui dan tidak dapat ditolak.`);
+        }
+        if (opname.verificationStatus === 'REJECTED') {
+          throw new Error(`Stock Opname ${opname.opnameNumber} sudah berstatus ditolak.`);
+        }
+
+        transaction.update(opnameRef, sanitizeFirestoreDoc({
+          verificationStatus: 'REJECTED',
+          notes: (opname.notes ? opname.notes + ' | ' : '') + `Ditolak Admin: ${reason.trim()}`,
+        }));
+
+        const app = approvals.find((a) => a.referenceId === opnameId && a.type === 'STOCK_OPNAME_ADJUSTMENT');
+        if (app) {
+          const appRef = doc(db, 'approvals', app.id);
+          transaction.update(appRef, sanitizeFirestoreDoc({
+            status: 'REJECTED',
+            rejectionReason: reason.trim(),
+            actionBy: currentUser!.fullName,
+            actionDate: now,
+          }));
+        }
       });
 
-      const app = approvals.find((a) => a.referenceId === opnameId && a.type === 'STOCK_OPNAME_ADJUSTMENT');
-      if (app) {
-        await updateDoc(doc(db, 'approvals', app.id), {
-          status: 'REJECTED',
-          rejectionReason: reason,
-          actionBy: currentUser!.fullName,
-          actionDate: now,
-        });
-      }
-
-      await logAudit('OPNAME_ADJUSTMENT_REJECTED', 'Approval Center', `Menolak adjustment opname ${opname.opnameNumber}. Alasan: ${reason}`);
-      showToast('warning', 'Adjustment Ditolak', 'Penolakan adjustment opname tercatat.');
+      await logAudit(
+        'OPNAME_ADJUSTMENT_REJECTED',
+        'Stock Opname',
+        `Administrator ${currentUser!.fullName} menolak penyesuaian opname ${opnameId}. Alasan: ${reason}`
+      );
+      showToast('warning', 'Adjustment Ditolak', `Penyesuaian opname telah ditolak.`);
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: rejectOpnameAdjustment]', err);
-      showToast('error', 'Gagal Menolak Adjustment Opname', err.message);
+      showToast('error', 'Gagal Menolak Adjustment Opname', err.message || 'Terjadi kesalahan transaksi.');
       return false;
     }
   };
@@ -3351,6 +3615,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         rejectGoodsIssue,
         createStockTransfer,
         receiveStockTransfer,
+        rejectStockTransfer,
         createStockOpname,
         approveOpnameAdjustment,
         rejectOpnameAdjustment,
