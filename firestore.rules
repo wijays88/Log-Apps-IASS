@@ -56,12 +56,15 @@ service cloud.firestore {
       );
     }
 
-    // User Accounts and Profiles
+    // User Accounts and Profiles: Self-update restricted to non-security fields; role/status admin-only
     match /users/{userId} {
       allow get: if isCurrentUser(userId) || isAdmin() || isSignedIn();
       allow list: if isSignedIn();
       allow create: if isSignedIn();
-      allow update: if isCurrentUser(userId) || isAdmin();
+      allow update: if isAdmin() || (
+        isCurrentUser(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status', 'email', 'employeeId', 'permissions', 'assignedWarehouse'])
+      );
       allow delete: if isAdmin() && !isCurrentUser(userId);
     }
 
@@ -102,11 +105,26 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // Inventory Ledger & Physical Balances
+    // Authoritative Physical Balances
     match /inventory/{id} {
       allow read: if isSignedIn();
       allow create, update: if isLogistik() || isAdmin();
       allow delete: if isAdmin();
+    }
+
+    // Immutable Movement Ledger: Append-only by Logistik/Admin, read-only for authenticated users, never modified or deleted
+    match /inventoryMovements/{id} {
+      allow read: if isSignedIn();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.movementId is string &&
+        request.resource.data.materialId is string &&
+        request.resource.data.locationId is string &&
+        request.resource.data.delta is number &&
+        request.resource.data.quantity >= 0 &&
+        request.resource.data.balanceBefore is number &&
+        request.resource.data.balanceAfter is number &&
+        request.resource.data.idempotencyKey is string;
+      allow update, delete: if false;
     }
 
     // Operational Transactions

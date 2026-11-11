@@ -45,6 +45,8 @@ export const KartuStok: React.FC = () => {
     goodsIssues,
     stockTransfers,
     stockOpnames,
+    inventoryMovements,
+    consumptions,
     currentUser,
     setActiveNav,
   } = useApp();
@@ -90,6 +92,65 @@ export const KartuStok: React.FC = () => {
     const matCode = currentMaterial.materialCode || currentMaterial.itemCode || '';
     const locId = currentLocation.id;
 
+    const currentBal = items.find(
+      (i) => (i.materialId === matId || i.itemId === matId || i.materialCode === matCode) && i.locationId === locId
+    );
+
+    // 1. If authoritative ledger movements exist for this SKU and warehouse, use them directly
+    const matchedMovements = (inventoryMovements || []).filter(
+      (m) => (m.materialId === matId || m.materialCode === matCode) && m.locationId === locId
+    );
+
+    if (matchedMovements.length > 0) {
+      const sortedMovements = [...matchedMovements].sort((a, b) => {
+        const seqA = a.postingSequence || a.createdTimestampMs || 0;
+        const seqB = b.postingSequence || b.createdTimestampMs || 0;
+        if (seqA !== seqB) return seqA - seqB;
+        return a.createdAt.localeCompare(b.createdAt);
+      });
+
+      return sortedMovements.map((mov, idx) => {
+        const typeMapping: Record<string, { type: StockLedgerRow['type']; label: string }> = {
+          OPENING_BALANCE: { type: 'SALDO_AWAL', label: 'Saldo Awal (Baseline)' },
+          GOODS_RECEIPT: { type: 'BARANG_MASUK', label: 'Barang Masuk (GR)' },
+          GOODS_ISSUE: { type: 'BARANG_KELUAR', label: 'Barang Keluar (GI)' },
+          TRANSFER_DISPATCH: { type: 'TRANSFER_KELUAR', label: 'Transfer Keluar (TR-OUT)' },
+          TRANSFER_RECEIPT: { type: 'TRANSFER_MASUK', label: 'Transfer Masuk (TR-IN)' },
+          TRANSFER_RETURN: { type: 'TRANSFER_MASUK', label: 'Transfer Retur ke Asal' },
+          TRANSFER_LOSS: { type: 'TRANSFER_KELUAR', label: 'Kerugian Transit (Loss)' },
+          TRANSFER_DAMAGE: { type: 'TRANSFER_KELUAR', label: 'Kerusakan Transit (Damage)' },
+          STOCK_OPNAME_ADJUSTMENT: {
+            type: 'OPNAME_ADJUSTMENT',
+            label: mov.delta >= 0 ? 'Opname Surplus (+)' : 'Opname Defisit (-)',
+          },
+          DAILY_CONSUMPTION: { type: 'BARANG_KELUAR', label: 'Pemakaian Harian (Konsumsi)' },
+          ADMIN_CORRECTION: {
+            type: mov.delta >= 0 ? 'BARANG_MASUK' : 'BARANG_KELUAR',
+            label: 'Koreksi Saldo Administrator',
+          },
+        };
+
+        const mapped = typeMapping[mov.movementType] || { type: 'BARANG_MASUK', label: mov.movementType };
+
+        return {
+          id: `mov-row-${idx}-${mov.id}`,
+          date: mov.createdAt ? mov.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
+          transactionNumber: mov.sourceDocumentId || mov.movementId,
+          type: mapped.type,
+          typeLabel: mapped.label,
+          referenceDoc: mov.sourceDocumentType ? `[${mov.sourceDocumentType}] ${mov.sourceDocumentId}` : mov.sourceDocumentId,
+          originDest: mov.locationName,
+          qtyIn: mov.delta > 0 ? mov.delta : 0,
+          qtyOut: mov.delta < 0 ? Math.abs(mov.delta) : 0,
+          runningBalance: mov.balanceAfter,
+          actor: mov.recordedBy || 'System',
+          notes: mov.notes || '',
+          status: mov.status,
+        };
+      });
+    }
+
+    // 2. Fallback synthesis for existing/legacy transactional records before ledger activation
     const allEvents: {
       date: string;
       createdAt: string;
@@ -105,7 +166,7 @@ export const KartuStok: React.FC = () => {
       status: string;
     }[] = [];
 
-    // 1. Goods Receipts (Barang Masuk) to this location
+    // Goods Receipts (Barang Masuk)
     goodsReceipts.forEach((gr) => {
       const matchMat = gr.itemId === matId || gr.itemCode === matCode;
       const matchLoc = gr.destinationLocationId === locId;
@@ -127,7 +188,7 @@ export const KartuStok: React.FC = () => {
       }
     });
 
-    // 2. Approved Goods Issues (Barang Keluar) from this location
+    // Approved Goods Issues (Barang Keluar)
     goodsIssues.forEach((gi) => {
       const matchMat = gi.itemId === matId || gi.itemCode === matCode;
       const matchLoc = !gi.locationId || gi.locationId === locId;
@@ -152,12 +213,11 @@ export const KartuStok: React.FC = () => {
       }
     });
 
-    // 3. Stock Transfers (Transfer Stok) - Outbound and Inbound
+    // Stock Transfers (Transfer Stok)
     stockTransfers.forEach((tr) => {
       const matchMat = tr.itemId === matId || tr.itemCode === matCode;
       if (!matchMat) return;
 
-      // Transfer Out from this location (dispatched or completed)
       if (tr.originLocationId === locId && (tr.status === 'IN_TRANSIT' || tr.status === 'COMPLETED')) {
         allEvents.push({
           date: tr.dispatchedAt ? tr.dispatchedAt.slice(0, 10) : tr.requestDate || tr.createdAt.slice(0, 10),
@@ -175,7 +235,6 @@ export const KartuStok: React.FC = () => {
         });
       }
 
-      // Transfer In to this location (completed only)
       if (tr.destinationLocationId === locId && tr.status === 'COMPLETED') {
         allEvents.push({
           date: tr.receivedAt ? tr.receivedAt.slice(0, 10) : tr.createdAt.slice(0, 10),
@@ -194,14 +253,14 @@ export const KartuStok: React.FC = () => {
       }
     });
 
-    // 4. Stock Opname Adjustments (Adjusted only)
+    // Stock Opname Adjustments
     stockOpnames.forEach((so) => {
       const matchMat = so.itemId === matId || so.itemCode === matCode;
       const matchLoc = so.locationId === locId;
       const isAdjusted = so.verificationStatus === 'ADJUSTED';
 
       if (matchMat && matchLoc && isAdjusted) {
-        const variance = so.variance; // physical - system
+        const variance = so.variance;
         allEvents.push({
           date: so.adjustedAt ? so.adjustedAt.slice(0, 10) : so.opnameDate || so.createdAt.slice(0, 10),
           createdAt: so.adjustedAt || so.createdAt,
@@ -219,6 +278,28 @@ export const KartuStok: React.FC = () => {
       }
     });
 
+    // Daily Consumptions
+    (consumptions || []).forEach((c) => {
+      const matchMat = c.materialId === matId || c.materialCode === matCode;
+      const matchLoc = c.locationId === locId;
+      if (matchMat && matchLoc) {
+        allEvents.push({
+          date: c.date || c.createdAt.slice(0, 10),
+          createdAt: c.createdAt || c.date,
+          refNum: c.id,
+          type: 'BARANG_KELUAR',
+          typeLabel: 'Pemakaian Harian (Konsumsi)',
+          refDoc: c.areaOrToilet,
+          originDest: `Pemakaian: ${c.areaOrToilet} (${c.shift})`,
+          qtyIn: 0,
+          qtyOut: c.quantityUsed,
+          actor: c.operator || 'Petugas',
+          notes: c.notes || 'Pemakaian operasional',
+          status: 'POSTED',
+        });
+      }
+    });
+
     // Sort strictly chronological ascending
     allEvents.sort((a, b) => {
       const cmp = a.date.localeCompare(b.date);
@@ -226,11 +307,32 @@ export const KartuStok: React.FC = () => {
       return a.createdAt.localeCompare(b.createdAt);
     });
 
-    // Calculate running balance starting from 0 or initial reference
-    let running = 0;
-    const ledgerWithBalances: StockLedgerRow[] = allEvents.map((evt, idx) => {
+    // Calculate running balance starting strictly from openingStock
+    const openingBal = currentBal ? (Number(currentBal.openingStock) || 0) : 0;
+    let running = openingBal;
+    const ledgerWithBalances: StockLedgerRow[] = [];
+
+    if (openingBal > 0) {
+      ledgerWithBalances.push({
+        id: `row-open-${matId}-${locId}`,
+        date: currentBal?.lastTransactionDate || '2026-10-01',
+        transactionNumber: `OPEN-${matCode}`,
+        type: 'SALDO_AWAL',
+        typeLabel: 'Saldo Awal (Opening Stock)',
+        referenceDoc: 'Master Saldo Awal',
+        originDest: currentLocation.name,
+        qtyIn: openingBal,
+        qtyOut: 0,
+        runningBalance: openingBal,
+        actor: 'Administrator',
+        notes: 'Saldo awal baseline persediaan gudang',
+        status: 'POSTED',
+      });
+    }
+
+    allEvents.forEach((evt, idx) => {
       running += evt.qtyIn - evt.qtyOut;
-      return {
+      ledgerWithBalances.push({
         id: `row-${idx}-${evt.refNum}`,
         date: evt.date,
         transactionNumber: evt.refNum,
@@ -244,11 +346,11 @@ export const KartuStok: React.FC = () => {
         actor: evt.actor,
         notes: evt.notes,
         status: evt.status,
-      };
+      });
     });
 
     return ledgerWithBalances;
-  }, [currentMaterial, currentLocation, goodsReceipts, goodsIssues, stockTransfers, stockOpnames]);
+  }, [currentMaterial, currentLocation, items, goodsReceipts, goodsIssues, stockTransfers, stockOpnames, inventoryMovements, consumptions]);
 
   // Apply Date and Search Filters
   const filteredLedger = useMemo(() => {

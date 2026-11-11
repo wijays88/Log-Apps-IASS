@@ -45,7 +45,16 @@ import {
   SystemSettings,
   ExcelImportValidationError,
   TransferRejectionDisposition,
+  InventoryMovement,
+  IN_TRANSIT_LOCATION_ID,
+  IN_TRANSIT_LOCATION_NAME,
 } from '../types';
+import {
+  executeInventoryMovementInTransaction,
+  getCanonicalBalanceId,
+  generateIdempotencyKey,
+  commitInChunks,
+} from '../services/inventoryEngine';
 import {
   INITIAL_USERS,
   INITIAL_CATEGORIES,
@@ -118,6 +127,7 @@ interface AppContextType {
   activeUnits: MasterUnit[];
   inventory: InventoryBalance[];
   items: InventoryBalance[]; // alias for compatibility
+  inventoryMovements: InventoryMovement[];
   consumptions: ConsumptionRecord[];
   morganTrolleys: MorganTrolleyRecord[];
   supplyRequests: SupplyRequestRecord[];
@@ -228,7 +238,7 @@ interface AppContextType {
   rejectOpnameAdjustment: (opnameId: string, reason: string) => Promise<boolean>;
 
   // Consumption (Tissue, Plastik, Chemical)
-  recordConsumption: (record: Omit<ConsumptionRecord, 'id' | 'createdAt'>) => boolean;
+  recordConsumption: (record: Omit<ConsumptionRecord, 'id' | 'createdAt'>) => Promise<boolean> | boolean;
 
   // Morgan Trolley
   saveMorganTrolley: (data: Partial<MorganTrolleyRecord>) => boolean;
@@ -340,6 +350,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [categories, setCategories] = useState<MasterCategory[]>(() => loadState('categories', []));
   const [units, setUnits] = useState<MasterUnit[]>(() => loadState('units', []));
   const [inventory, setInventory] = useState<InventoryBalance[]>(() => loadState('inventory', []));
+  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>(() => loadState('inventoryMovements', []));
   const [consumptions, setConsumptions] = useState<ConsumptionRecord[]>(() => loadState('consumptions', []));
   const [morganTrolleys, setMorganTrolleys] = useState<MorganTrolleyRecord[]>(() => loadState('trolleys', []));
   const [supplyRequests, setSupplyRequests] = useState<SupplyRequestRecord[]>(() => loadState('supply_requests', []));
@@ -483,7 +494,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     };
 
-    let pendingLoads = 17;
+    let pendingLoads = 18;
     const markLoaded = () => {
       pendingLoads--;
       if (pendingLoads <= 0) {
@@ -498,6 +509,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const unsubReqUnits = bindSync('requestingUnits', setRequestingUnits, markLoaded);
     const unsubSuppliers = bindSync('suppliers', setSuppliers, markLoaded);
     const unsubInventory = bindSync('inventory', setInventory, markLoaded);
+    const unsubMovements = bindSync('inventoryMovements', setInventoryMovements, markLoaded);
     const unsubReceipts = bindSync('goodsReceipts', setGoodsReceipts, markLoaded);
     const unsubIssues = bindSync('goodsIssues', setGoodsIssues, markLoaded);
     const unsubTransfers = bindSync('stockTransfers', setStockTransfers, markLoaded);
@@ -528,6 +540,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubReqUnits();
       unsubSuppliers();
       unsubInventory();
+      unsubMovements();
       unsubReceipts();
       unsubIssues();
       unsubTransfers();
@@ -1721,53 +1734,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      // 1. Atomic write using Firestore writeBatch to guarantee transaction and inventory consistency
-      const batch = writeBatch(db);
-      const receiptDocRef = doc(db, 'goodsReceipts', id);
-      batch.set(receiptDocRef, sanitizeFirestoreDoc(newReceipt));
-
-      // 2. Authoritative update of inventory balance in Firestore
-      const balId = `bal-${material.id}-${location.id}`;
       const existingBal = inventory.find(
-        (b) => b.materialId === material.id && b.locationId === location.id
+        (b) => (b.materialId === material.id || b.itemId === material.id) && b.locationId === location.id
       );
 
-      if (existingBal) {
-        const newQtyIn = existingBal.qtyIn + data.quantity;
-        const newAvailable = existingBal.openingStock + newQtyIn - existingBal.qtyOut;
-        const balDocRef = doc(db, 'inventory', existingBal.id);
-        batch.update(balDocRef, {
-          qtyIn: newQtyIn,
-          availableStock: newAvailable,
-          lastTransactionDate: data.receiptDate || now.split(' ')[0],
-          unitCost: material.unitCost,
-        });
-      } else {
-        const newBalance: InventoryBalance = {
-          id: balId,
-          materialId: material.id,
-          materialCode: material.materialCode,
-          materialName: material.materialName,
-          categoryId: material.categoryId,
-          categoryName: material.categoryName,
-          unit: material.unit,
-          locationId: location.id,
-          locationName: location.name,
-          variantValue: material.variantValue || '',
-          openingStock: 0,
-          qtyIn: data.quantity,
-          qtyOut: 0,
-          availableStock: data.quantity,
-          minimumStock: material.minimumStock,
-          reorderPoint: material.reorderPoint,
-          lastTransactionDate: data.receiptDate || now.split(' ')[0],
-          unitCost: material.unitCost,
-        };
-        const balDocRef = doc(db, 'inventory', balId);
-        batch.set(balDocRef, sanitizeFirestoreDoc(newBalance));
-      }
+      await runTransaction(db, async (transaction) => {
+        // 1. Post authoritative movement and update inventory balance inside transaction
+        await executeInventoryMovementInTransaction(
+          transaction,
+          db,
+          {
+            materialId: material.id,
+            materialCode: material.materialCode,
+            materialName: material.materialName,
+            locationId: location.id,
+            locationName: location.name,
+            unit: material.unit,
+            variantValue: material.variantValue || '',
+            movementType: 'GOODS_RECEIPT',
+            quantity: data.quantity,
+            delta: data.quantity,
+            sourceDocumentId: id,
+            sourceDocumentType: 'goodsReceipts',
+            idempotencyKey: generateIdempotencyKey('GR', id, material.id, location.id, 'GOODS_RECEIPT'),
+            actorName: currentUser!.fullName,
+            actorEmployeeId: currentUser!.employeeId,
+            notes: `Penerimaan dari ${data.sourceSupplier} (Ref: ${data.referenceDocument || '-'})`,
+            unitCost: material.unitCost,
+            timestamp: now,
+            materialFallback: material,
+          },
+          {
+            customBalanceDocId: existingBal ? existingBal.id : undefined,
+          }
+        );
 
-      await batch.commit();
+        // 2. Set goodsReceipt document inside transaction
+        const receiptDocRef = doc(db, 'goodsReceipts', id);
+        transaction.set(receiptDocRef, sanitizeFirestoreDoc(newReceipt));
+      });
 
       // 3. Write Audit Log
       await logAudit(
@@ -1922,58 +1927,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    const issue = goodsIssues.find((i) => i.id === issueId);
-    if (!issue) return false;
-
-    const balance = inventory.find(
-      (b) => b.materialId === issue.itemId && b.locationId === issue.locationId
-    );
-
-    if (!balance || balance.availableStock < approvedQty) {
-      showToast('error', 'Stok Kurang', `Saldo persediaan saat ini tidak mencukupi untuk mengeluarkan ${approvedQty} ${issue.unit}.`);
+    if (approvedQty <= 0) {
+      showToast('error', 'Validasi Gagal', 'Kuantitas persetujuan harus lebih dari 0.');
       return false;
     }
 
+    const issueRef = doc(db, 'goodsIssues', issueId);
     const now = getJakartaTimestamp();
+    let issueNumberReported = issueId;
+    let requestingUnitReported = '';
+    let unitReported = '';
+    let itemNameReported = '';
 
     try {
-      // 1. Authoritative write to goodsIssues
-      await updateDoc(doc(db, 'goodsIssues', issueId), {
-        status: 'APPROVED',
-        approvedQuantity: approvedQty,
-        processedBy: currentUser!.fullName,
-        approvedAt: now,
-      });
+      await runTransaction(db, async (transaction) => {
+        // 1. READS FIRST: Read goods issue document
+        const issueSnap = await transaction.get(issueRef);
+        if (!issueSnap.exists()) {
+          throw new Error('Dokumen pengeluaran barang tidak ditemukan.');
+        }
 
-      // 2. Authoritative update of approval request
-      const app = approvals.find((a) => a.referenceId === issueId && a.type === 'BARANG_KELUAR');
-      if (app) {
-        await updateDoc(doc(db, 'approvals', app.id), {
+        const issue = issueSnap.data() as GoodsIssue;
+        issueNumberReported = issue.issueNumber || issueId;
+        requestingUnitReported = issue.requestingUnit || '';
+        unitReported = issue.unit || 'Pcs';
+        itemNameReported = issue.itemName || 'Material';
+
+        if (issue.status === 'APPROVED') {
+          throw new Error(`Pengeluaran ${issueNumberReported} sudah pernah disetujui sebelumnya.`);
+        }
+        if (issue.status === 'REJECTED') {
+          throw new Error(`Pengeluaran ${issueNumberReported} sudah berstatus ditolak.`);
+        }
+
+        const targetLocId = issue.locationId || locations[0]?.id;
+        const targetLoc = locations.find((l) => l.id === targetLocId);
+        const existingBal = inventory.find(
+          (b) => (b.materialId === issue.itemId || b.itemId === issue.itemId) && b.locationId === targetLocId
+        );
+
+        // 2. Post movement inside transaction (strictly reads balance first, verifies anti-negative stock)
+        await executeInventoryMovementInTransaction(
+          transaction,
+          db,
+          {
+            materialId: issue.itemId,
+            materialCode: issue.itemCode,
+            materialName: issue.itemName,
+            locationId: targetLocId,
+            locationName: targetLoc?.name || issue.locationName || 'Gudang',
+            unit: issue.unit,
+            variantValue: issue.variantValue,
+            movementType: 'GOODS_ISSUE',
+            quantity: approvedQty,
+            delta: -approvedQty,
+            sourceDocumentId: issueId,
+            sourceDocumentType: 'goodsIssues',
+            idempotencyKey: generateIdempotencyKey('GI', issueId, issue.itemId, targetLocId, 'GOODS_ISSUE'),
+            actorName: currentUser!.fullName,
+            actorEmployeeId: currentUser!.employeeId,
+            notes: `Pengeluaran ${issue.issueNumber} untuk ${issue.requestingUnit} (${issue.destination})`,
+            timestamp: now,
+          },
+          {
+            customBalanceDocId: existingBal?.id,
+          }
+        );
+
+        // 3. WRITES: Authoritative update of goodsIssues doc
+        transaction.update(issueRef, sanitizeFirestoreDoc({
           status: 'APPROVED',
-          actionBy: currentUser!.fullName,
-          actionDate: now,
-        });
-      }
+          approvedQuantity: approvedQty,
+          processedBy: currentUser!.fullName,
+          approvedAt: now,
+        }));
 
-      // 3. Deduct inventory balance in Firestore
-      const newOut = balance.qtyOut + approvedQty;
-      const newAvailable = balance.openingStock + balance.qtyIn - newOut;
-      await updateDoc(doc(db, 'inventory', balance.id), {
-        qtyOut: newOut,
-        availableStock: newAvailable,
-        lastTransactionDate: now.split(' ')[0],
+        // 4. Update approval request doc if present
+        const app = approvals.find((a) => a.referenceId === issueId && a.type === 'BARANG_KELUAR');
+        if (app) {
+          const appRef = doc(db, 'approvals', app.id);
+          transaction.update(appRef, sanitizeFirestoreDoc({
+            status: 'APPROVED',
+            actionBy: currentUser!.fullName,
+            actionDate: now,
+          }));
+        }
       });
 
       await logAudit(
         'ISSUE_APPROVED',
         'Approval Center',
-        `Menyetujui pengeluaran ${approvedQty} ${issue.unit} ${issue.itemName} (${issue.issueNumber}) untuk ${issue.requestingUnit}`
+        `Menyetujui pengeluaran ${approvedQty} ${unitReported} ${itemNameReported} (${issueNumberReported}) untuk ${requestingUnitReported}`
       );
-      showToast('success', 'Pengeluaran Disetujui', `Dokumen ${issue.issueNumber} disetujui. Saldo terpotong.`);
+      showToast('success', 'Pengeluaran Disetujui', `Dokumen ${issueNumberReported} disetujui. Saldo terpotong.`);
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: approveGoodsIssue]', err);
-      showToast('error', 'Gagal Menyetujui Pengeluaran', err.message);
+      showToast('error', 'Gagal Menyetujui Pengeluaran', err.message || 'Terjadi kesalahan transaksi.');
       return false;
     }
   };
@@ -2109,26 +2159,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       await runTransaction(db, async (transaction) => {
-        const originSnap = await transaction.get(originBalRef);
-        if (!originSnap.exists()) {
-          throw new Error(`Material ${material.materialName} belum memiliki saldo stok di ${originLoc.name}.`);
-        }
+        // 1. Post TRANSFER_DISPATCH movement from source warehouse (delta: -transferQty)
+        await executeInventoryMovementInTransaction(
+          transaction,
+          db,
+          {
+            materialId: material.id,
+            materialCode: material.materialCode,
+            materialName: material.materialName,
+            locationId: originLoc.id,
+            locationName: originLoc.name,
+            unit: material.unit,
+            variantValue: material.variantValue || '',
+            movementType: 'TRANSFER_DISPATCH',
+            quantity: transferQty,
+            delta: -transferQty,
+            sourceDocumentId: transferId,
+            sourceDocumentType: 'stockTransfers',
+            idempotencyKey: generateIdempotencyKey('TR_DISPATCH', transferId, material.id, originLoc.id, 'TRANSFER_DISPATCH'),
+            actorName: currentUser!.fullName,
+            actorEmployeeId: currentUser!.employeeId,
+            notes: `Transfer keluar (${nextNumber}) ke ${destLoc.name}`,
+            timestamp: now,
+          },
+          {
+            customBalanceDocId: originBalLocal?.id,
+          }
+        );
 
-        const originData = originSnap.data() as InventoryBalance;
-        const currentAvailable = Number(originData.availableStock) || 0;
-        if (currentAvailable < transferQty) {
-          throw new Error(`Stok tersedia di ${originLoc.name} tidak mencukupi saat proses pengiriman. Sisa: ${currentAvailable} ${material.unit}.`);
-        }
+        // 2. Post TRANSFER_DISPATCH movement into IN_TRANSIT logical bucket (delta: +transferQty)
+        await executeInventoryMovementInTransaction(
+          transaction,
+          db,
+          {
+            materialId: material.id,
+            materialCode: material.materialCode,
+            materialName: material.materialName,
+            locationId: IN_TRANSIT_LOCATION_ID,
+            locationName: IN_TRANSIT_LOCATION_NAME,
+            unit: material.unit,
+            variantValue: material.variantValue || '',
+            movementType: 'TRANSFER_DISPATCH',
+            quantity: transferQty,
+            delta: transferQty,
+            sourceDocumentId: transferId,
+            sourceDocumentType: 'stockTransfers',
+            idempotencyKey: generateIdempotencyKey('TR_DISPATCH_TRANSIT', transferId, material.id, IN_TRANSIT_LOCATION_ID, 'TRANSFER_DISPATCH'),
+            actorName: currentUser!.fullName,
+            actorEmployeeId: currentUser!.employeeId,
+            notes: `Barang dalam perjalanan (${nextNumber}) dari ${originLoc.name} ke ${destLoc.name}`,
+            timestamp: now,
+            materialFallback: material,
+          }
+        );
 
-        const newOut = (Number(originData.qtyOut) || 0) + transferQty;
-        const newAvailable = (Number(originData.openingStock) || 0) + (Number(originData.qtyIn) || 0) - newOut;
-
-        transaction.update(originBalRef, sanitizeFirestoreDoc({
-          qtyOut: newOut,
-          availableStock: newAvailable,
-          lastTransactionDate: now.split(' ')[0],
-        }));
-
+        // 3. Set transfer document inside transaction
         const transferDocRef = doc(db, 'stockTransfers', transferId);
         transaction.set(transferDocRef, sanitizeFirestoreDoc(newTransfer));
       });
@@ -2136,9 +2221,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await logAudit(
         'TRANSFER_CREATED',
         'Transfer Stok',
-        `Membuat transfer ${transferQty} ${material.unit} ${material.materialName} (${nextNumber}) dari ${newTransfer.originLocationName} ke ${newTransfer.destinationLocationName}. Stok gudang asal terpotong, status In-Transit.`
+        `Membuat transfer ${transferQty} ${material.unit} ${material.materialName} (${nextNumber}) dari ${newTransfer.originLocationName} ke ${newTransfer.destinationLocationName}. Stok gudang asal terpotong, tercatat di In-Transit.`
       );
-      showToast('success', 'Transfer Diberangkatkan', `Nomor Transfer: ${nextNumber}. Status: In-Transit. Stok di ${originLoc.name} telah dipotong.`);
+      showToast('success', 'Transfer Diberangkatkan', `Nomor Transfer: ${nextNumber}. Status: In-Transit. Stok di ${originLoc.name} telah dipotong dan dipindahkan ke akun transit.`);
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: createStockTransfer]', err);
@@ -2172,48 +2257,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const destBalLocal = inventory.find(
           (b) => (b.materialId === transfer.itemId || b.itemId === transfer.itemId) && b.locationId === transfer.destinationLocationId
         );
-        const destBalId = destBalLocal ? destBalLocal.id : `bal-${transfer.itemId}-${transfer.destinationLocationId}`;
-        const destBalRef = doc(db, 'inventory', destBalId);
-        const destSnap = await transaction.get(destBalRef);
+        const material = materials.find((m) => m.id === transfer.itemId);
 
-        if (destSnap.exists()) {
-          const destData = destSnap.data() as InventoryBalance;
-          const newIn = (Number(destData.qtyIn) || 0) + Number(transfer.quantity);
-          const newAvailable = (Number(destData.openingStock) || 0) + newIn - (Number(destData.qtyOut) || 0);
-
-          transaction.update(destBalRef, sanitizeFirestoreDoc({
-            qtyIn: newIn,
-            availableStock: newAvailable,
-            lastTransactionDate: now.split(' ')[0],
-          }));
-        } else {
-          const material = materials.find((m) => m.id === transfer.itemId);
-          const newBal: InventoryBalance = {
-            id: destBalId,
+        // 1. Post TRANSFER_RECEIPT clearing IN_TRANSIT logical bucket (delta: -transfer.quantity)
+        await executeInventoryMovementInTransaction(
+          transaction,
+          db,
+          {
             materialId: transfer.itemId,
-            itemId: transfer.itemId,
             materialCode: transfer.itemCode,
-            itemCode: transfer.itemCode,
             materialName: transfer.itemName,
-            itemName: transfer.itemName,
-            categoryId: material?.categoryId || 'cat-gen',
-            categoryName: material?.categoryName || 'General',
+            locationId: IN_TRANSIT_LOCATION_ID,
+            locationName: IN_TRANSIT_LOCATION_NAME,
             unit: transfer.unit,
+            variantValue: transfer.variantValue || '',
+            movementType: 'TRANSFER_RECEIPT',
+            quantity: Number(transfer.quantity),
+            delta: -Number(transfer.quantity),
+            sourceDocumentId: transferId,
+            sourceDocumentType: 'stockTransfers',
+            idempotencyKey: generateIdempotencyKey('TR_RECEIPT_TRANSIT', transferId, transfer.itemId, IN_TRANSIT_LOCATION_ID, 'TRANSFER_RECEIPT'),
+            actorName: currentUser!.fullName,
+            actorEmployeeId: currentUser!.employeeId,
+            notes: `Barang keluar dari transit (${transfer.transferNumber}) tiba di ${transfer.destinationLocationName}`,
+            timestamp: now,
+            materialFallback: material,
+          }
+        );
+
+        // 2. Post TRANSFER_RECEIPT into destination warehouse (delta: +transfer.quantity)
+        await executeInventoryMovementInTransaction(
+          transaction,
+          db,
+          {
+            materialId: transfer.itemId,
+            materialCode: transfer.itemCode,
+            materialName: transfer.itemName,
             locationId: transfer.destinationLocationId,
             locationName: transfer.destinationLocationName,
+            unit: transfer.unit,
             variantValue: transfer.variantValue || '',
-            openingStock: 0,
-            qtyIn: Number(transfer.quantity),
-            qtyOut: 0,
-            availableStock: Number(transfer.quantity),
-            minimumStock: material?.minimumStock || 0,
-            reorderPoint: material?.reorderPoint || 0,
-            lastTransactionDate: now.split(' ')[0],
-            unitCost: material?.unitCost || 0,
-          };
-          transaction.set(destBalRef, sanitizeFirestoreDoc(newBal));
-        }
+            movementType: 'TRANSFER_RECEIPT',
+            quantity: Number(transfer.quantity),
+            delta: Number(transfer.quantity),
+            sourceDocumentId: transferId,
+            sourceDocumentType: 'stockTransfers',
+            idempotencyKey: generateIdempotencyKey('TR_RECEIPT', transferId, transfer.itemId, transfer.destinationLocationId, 'TRANSFER_RECEIPT'),
+            actorName: currentUser!.fullName,
+            actorEmployeeId: currentUser!.employeeId,
+            notes: `Penerimaan transfer (${transfer.transferNumber}) dari ${transfer.originLocationName}`,
+            timestamp: now,
+            materialFallback: material,
+          },
+          {
+            customBalanceDocId: destBalLocal?.id,
+          }
+        );
 
+        // 3. Update transfer document to COMPLETED
         const updateData: Partial<StockTransfer> = {
           status: 'COMPLETED',
           receivingUser: `${currentUser!.fullName} (${currentUser!.employeeId})`,
@@ -2230,10 +2331,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await logAudit(
         'TRANSFER_RECEIVED',
         'Transfer Stok',
-        `Konfirmasi terima transfer ${updatedTr?.transferNumber || transferId} oleh ${currentUser!.fullName}. Stok bertambah di ${updatedTr?.destinationLocationName || 'Gudang Tujuan'}.`
+        `Konfirmasi terima transfer ${updatedTr?.transferNumber || transferId} oleh ${currentUser!.fullName}. Stok berpindah dari In-Transit ke ${updatedTr?.destinationLocationName || 'Gudang Tujuan'}.`
       );
 
-      showToast('success', 'Transfer Diterima (Selesai)', `Kuantitas telah ditambahkan ke saldo inventaris gudang tujuan.`);
+      showToast('success', 'Transfer Diterima (Selesai)', `Kuantitas telah ditambahkan ke saldo inventaris gudang tujuan dan dinolkan dari transit.`);
       return true;
     } catch (err: any) {
       console.error('[Firestore Error: receiveStockTransfer]', err);
@@ -2280,37 +2381,96 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           throw new Error(`Transfer ini sudah berstatus ${transfer.status} dan tidak dapat diubah lagi.`);
         }
 
-        // Inventory safety logic:
-        // ONLY restore stock to origin if items physically return intact to the source warehouse
-        // or if transfer is cancelled prior to physical dispatch.
-        // For DAMAGED_IN_TRANSIT or LOST_IN_TRANSIT: source warehouse already physically dispatched them,
-        // so restoring stock would create a phantom inventory surplus!
         const shouldRestoreToOrigin = disposition === 'RETURNED_TO_ORIGIN' || disposition === 'CANCELLED_BEFORE_DISPATCH';
+        const originBalLocal = inventory.find(
+          (b) => (b.materialId === transfer.itemId || b.itemId === transfer.itemId) && b.locationId === transfer.originLocationId
+        );
 
-        let originBalRef: any = null;
-        let originSnap: any = null;
-
-        // Step 2: Read origin balance if stock restoration is required
         if (shouldRestoreToOrigin) {
-          const originBalLocal = inventory.find(
-            (b) => (b.materialId === transfer.itemId || b.itemId === transfer.itemId) && b.locationId === transfer.originLocationId
+          // 1. Deduct from IN_TRANSIT logical bucket (delta: -quantity)
+          await executeInventoryMovementInTransaction(
+            transaction,
+            db,
+            {
+              materialId: transfer.itemId,
+              materialCode: transfer.itemCode,
+              materialName: transfer.itemName,
+              locationId: IN_TRANSIT_LOCATION_ID,
+              locationName: IN_TRANSIT_LOCATION_NAME,
+              unit: transfer.unit,
+              variantValue: transfer.variantValue || '',
+              movementType: 'TRANSFER_RETURN',
+              quantity: Number(transfer.quantity),
+              delta: -Number(transfer.quantity),
+              sourceDocumentId: transferId,
+              sourceDocumentType: 'stockTransfers',
+              idempotencyKey: generateIdempotencyKey('TR_RETURN_TRANSIT', transferId, transfer.itemId, IN_TRANSIT_LOCATION_ID, 'TRANSFER_RETURN'),
+              actorName: currentUser!.fullName,
+              actorEmployeeId: currentUser!.employeeId,
+              notes: `Pembalikan transit (${transfer.transferNumber}) kembali ke gudang asal: ${reason}`,
+              timestamp: now,
+            }
           );
-          const originBalId = originBalLocal ? originBalLocal.id : `bal-${transfer.itemId}-${transfer.originLocationId}`;
-          originBalRef = doc(db, 'inventory', originBalId);
-          originSnap = await transaction.get(originBalRef);
-        }
 
-        // Step 3: Writes (Strictly after all reads)
-        if (shouldRestoreToOrigin && originBalRef && originSnap?.exists()) {
-          const originData = originSnap.data() as InventoryBalance;
-          const restoredOut = Math.max(0, (Number(originData.qtyOut) || 0) - Number(transfer.quantity));
-          const restoredAvailable = (Number(originData.openingStock) || 0) + (Number(originData.qtyIn) || 0) - restoredOut;
-
-          transaction.update(originBalRef, sanitizeFirestoreDoc({
-            qtyOut: restoredOut,
-            availableStock: restoredAvailable,
-            lastTransactionDate: now.split(' ')[0],
-          }));
+          // 2. Restore stock to origin warehouse (delta: +quantity)
+          await executeInventoryMovementInTransaction(
+            transaction,
+            db,
+            {
+              materialId: transfer.itemId,
+              materialCode: transfer.itemCode,
+              materialName: transfer.itemName,
+              locationId: transfer.originLocationId,
+              locationName: transfer.originLocationName,
+              unit: transfer.unit,
+              variantValue: transfer.variantValue || '',
+              movementType: 'TRANSFER_RETURN',
+              quantity: Number(transfer.quantity),
+              delta: Number(transfer.quantity),
+              sourceDocumentId: transferId,
+              sourceDocumentType: 'stockTransfers',
+              idempotencyKey: generateIdempotencyKey('TR_RETURN', transferId, transfer.itemId, transfer.originLocationId, 'TRANSFER_RETURN'),
+              actorName: currentUser!.fullName,
+              actorEmployeeId: currentUser!.employeeId,
+              notes: `Pemulihan transfer (${transfer.transferNumber}): ${reason}`,
+              timestamp: now,
+            },
+            {
+              customBalanceDocId: originBalLocal?.id,
+            }
+          );
+        } else {
+          // Compensating movement against IN_TRANSIT bucket (deduct transit quantity)
+          const transitLossType = disposition === 'DAMAGED_IN_TRANSIT' ? 'TRANSFER_DAMAGE' : 'TRANSFER_LOSS';
+          await executeInventoryMovementInTransaction(
+            transaction,
+            db,
+            {
+              materialId: transfer.itemId,
+              materialCode: transfer.itemCode,
+              materialName: transfer.itemName,
+              locationId: IN_TRANSIT_LOCATION_ID,
+              locationName: IN_TRANSIT_LOCATION_NAME,
+              unit: transfer.unit,
+              variantValue: transfer.variantValue || '',
+              movementType: transitLossType,
+              quantity: Number(transfer.quantity),
+              delta: -Number(transfer.quantity),
+              sourceDocumentId: transferId,
+              sourceDocumentType: 'stockTransfers',
+              idempotencyKey: generateIdempotencyKey(
+                `TR_${disposition}_TRANSIT`,
+                transferId,
+                transfer.itemId,
+                IN_TRANSIT_LOCATION_ID,
+                transitLossType
+              ),
+              actorName: currentUser!.fullName,
+              actorEmployeeId: currentUser!.employeeId,
+              notes: `Penghapusan transit: Barang ${disposition === 'DAMAGED_IN_TRANSIT' ? 'rusak' : 'hilang'} di transit (${transfer.transferNumber}): ${reason}`,
+              timestamp: now,
+            }
+          );
         }
 
         const newStatus = disposition === 'CANCELLED_BEFORE_DISPATCH' ? 'CANCELLED' : 'REJECTED';
@@ -2434,6 +2594,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       conductedBy: `${currentUser!.fullName} (${currentUser!.employeeId})`,
       notes: data.notes?.trim() || '',
       createdAt: now,
+      // Concurrency & snapshot fields for cutoff
+      countStartedAt: now,
+      countCompletedAt: now,
+      systemBalanceAtCount: systemQty,
+      lastMovementAtCount: balance?.lastMovementId || '',
+      countVersion: balance?.version || 1,
     };
 
     const newApproval: ApprovalRequest = {
@@ -2496,13 +2662,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const now = getJakartaTimestamp();
 
     try {
+      let finalOpnameNumber = opnameId;
+      let finalPhysQty = 0;
+      let finalUnit = 'Pcs';
+
       await runTransaction(db, async (transaction) => {
+        // 1. READS FIRST: Read opname document
         const opnameSnap = await transaction.get(opnameRef);
         if (!opnameSnap.exists()) {
           throw new Error('Data Stock Opname tidak ditemukan di database.');
         }
 
         const opname = opnameSnap.data() as StockOpname;
+        finalOpnameNumber = opname.opnameNumber || opnameId;
+        finalPhysQty = opname.physicalQuantity;
+        finalUnit = opname.unit || 'Pcs';
+
         if (opname.verificationStatus === 'ADJUSTED') {
           throw new Error(`Stock Opname ${opname.opnameNumber} sudah pernah disetujui sebelumnya.`);
         }
@@ -2510,55 +2685,93 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           throw new Error(`Stock Opname ${opname.opnameNumber} sudah berstatus ditolak.`);
         }
 
-        // 1. Authoritative adjustment of inventory balance exactly once
+        // 2. Read balance document inside transaction
         const balLocal = inventory.find(
           (b) => (b.materialId === opname.itemId || b.itemId === opname.itemId) && b.locationId === opname.locationId
         );
-        const balId = balLocal ? balLocal.id : `bal-${opname.itemId}-${opname.locationId}`;
+        const balId = balLocal ? balLocal.id : getCanonicalBalanceId(opname.itemId, opname.locationId);
         const balRef = doc(db, 'inventory', balId);
         const balSnap = await transaction.get(balRef);
 
-        if (balSnap.exists()) {
-          transaction.update(balRef, sanitizeFirestoreDoc({
-            availableStock: opname.physicalQuantity,
-            lastTransactionDate: now.split(' ')[0],
-          }));
-        } else {
-          const material = materials.find((m) => m.id === opname.itemId);
-          const newBalance: InventoryBalance = {
-            id: balId,
-            materialId: opname.itemId,
-            itemId: opname.itemId,
-            materialCode: opname.itemCode,
-            itemCode: opname.itemCode,
-            materialName: opname.itemName,
-            itemName: opname.itemName,
-            categoryId: material?.categoryId || 'cat-gen',
-            categoryName: material?.categoryName || 'General',
-            unit: opname.unit,
-            locationId: opname.locationId,
-            locationName: opname.locationName,
-            variantValue: opname.variantValue || '',
-            openingStock: 0,
-            qtyIn: opname.physicalQuantity,
-            qtyOut: 0,
-            availableStock: opname.physicalQuantity,
-            minimumStock: material?.minimumStock || 0,
-            reorderPoint: material?.reorderPoint || 0,
-            lastTransactionDate: now.split(' ')[0],
-            unitCost: material?.unitCost || 0,
-          };
-          transaction.set(balRef, sanitizeFirestoreDoc(newBalance));
+        const currentAvailable = balSnap.exists()
+          ? Number(balSnap.data().availableStock) || 0
+          : 0;
+
+        // Cutoff protection logic:
+        const systemBalanceAtCount = opname.systemBalanceAtCount !== undefined
+          ? Number(opname.systemBalanceAtCount)
+          : Number(opname.systemQuantity) || 0;
+        const physicalQuantity = Number(opname.physicalQuantity) || 0;
+
+        // Variance detected at count time:
+        const cutoffVariance = physicalQuantity - systemBalanceAtCount;
+
+        // Any intervening post-count movements between count time and approval:
+        const interveningDelta = currentAvailable - systemBalanceAtCount;
+
+        // Preserve all post-count movements by applying the true cutoff variance as the adjustment delta:
+        const adjustmentDelta = cutoffVariance;
+        const targetBalance = currentAvailable + adjustmentDelta;
+
+        if (targetBalance < 0) {
+          throw new Error(
+            `INSUFFICIENT_STOCK: Penyesuaian opname sebesar ${adjustmentDelta} menghasilkan saldo akhir negatif (${targetBalance}). Periksa kembali mutasi pasca-opname.`
+          );
         }
 
-        // 2. Authoritative update of stockOpnames
+        const material = materials.find((m) => m.id === opname.itemId);
+
+        // 3. Post STOCK_OPNAME_ADJUSTMENT movement inside transaction
+        let movRes: any = { movementId: '' };
+        if (adjustmentDelta !== 0) {
+          movRes = await executeInventoryMovementInTransaction(
+            transaction,
+            db,
+            {
+              materialId: opname.itemId,
+              materialCode: opname.itemCode,
+              materialName: opname.itemName,
+              locationId: opname.locationId,
+              locationName: opname.locationName,
+              unit: opname.unit,
+              variantValue: opname.variantValue || '',
+              movementType: 'STOCK_OPNAME_ADJUSTMENT',
+              quantity: Math.abs(adjustmentDelta),
+              delta: adjustmentDelta,
+              sourceDocumentId: opnameId,
+              sourceDocumentType: 'stockOpnames',
+              idempotencyKey: generateIdempotencyKey('SO_ADJUST', opnameId, opname.itemId, opname.locationId, 'STOCK_OPNAME_ADJUSTMENT'),
+              actorName: currentUser!.fullName,
+              actorEmployeeId: currentUser!.employeeId,
+              notes: `Penyesuaian Fisik Opname ${opname.opnameNumber}: Fisik ${physicalQuantity}, Sistem saat hitung ${systemBalanceAtCount}, Selisih Cutoff ${cutoffVariance > 0 ? '+' : ''}${cutoffVariance}${interveningDelta !== 0 ? ` (Terdapat mutasi post-count ${interveningDelta > 0 ? '+' : ''}${interveningDelta})` : ''}`,
+              timestamp: now,
+              materialFallback: material,
+            },
+            {
+              customBalanceDocId: balLocal?.id,
+            }
+          );
+        }
+
+        // 4. Update opname metadata on balance document
+        transaction.update(balRef, sanitizeFirestoreDoc({
+          lastOpnameDate: opname.opnameDate || now.split(' ')[0],
+          lastOpnameNumber: opname.opnameNumber,
+          lastOpnameVariance: cutoffVariance,
+        }));
+
+        // 5. Authoritative update of stockOpnames
         transaction.update(opnameRef, sanitizeFirestoreDoc({
           verificationStatus: 'ADJUSTED',
           verifiedBy: `${currentUser!.fullName} (${currentUser!.employeeId})`,
           adjustedAt: now,
+          adjustedBalance: targetBalance,
+          adjustmentDelta,
+          interveningMovementsCount: interveningDelta !== 0 ? 1 : 0,
+          adjustmentMovementId: movRes.movementId || '',
         }));
 
-        // 3. Authoritative update of approvals (if exists)
+        // 6. Authoritative update of approvals (if exists)
         const app = approvals.find((a) => a.referenceId === opnameId && a.type === 'STOCK_OPNAME_ADJUSTMENT');
         if (app) {
           const appRef = doc(db, 'approvals', app.id);
@@ -2649,7 +2862,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // ----------------------------------------------------
   // CONSUMPTION (TISSUE & PLASTIK PEMAKAIAN HARIAN/SHIFT)
   // ----------------------------------------------------
-  const recordConsumption = (recordData: Omit<ConsumptionRecord, 'id' | 'createdAt'>): boolean => {
+  const recordConsumption = async (recordData: Omit<ConsumptionRecord, 'id' | 'createdAt'>): Promise<boolean> => {
     const perm = can('CREATE_TRANSACTION');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Izin tidak mencukupi.');
@@ -2667,43 +2880,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    const balance = inventory.find(
-      (b) => b.materialId === material.id && b.locationId === recordData.locationId
-    );
-    const available = balance ? balance.availableStock : 0;
-
-    if (available < recordData.quantityUsed) {
-      showToast('error', 'Stok Tidak Mencukupi', `Sisa stok di ${recordData.locationName} hanya ${available} ${material.unit}. Tidak dapat mencatat pemakaian ${recordData.quantityUsed} ${material.unit}.`);
-      return false;
-    }
-
     const now = getJakartaTimestamp();
+    const consId = 'cons-' + Date.now();
     const newRecord: ConsumptionRecord = {
       ...recordData,
-      id: 'cons-' + Date.now(),
+      id: consId,
       createdAt: now,
     };
 
-    // Deduct stock from location balance
-    setInventory((prev) =>
-      prev.map((b) => {
-        if (b.materialId === material.id && b.locationId === recordData.locationId) {
-          const newOut = b.qtyOut + recordData.quantityUsed;
-          return {
-            ...b,
-            qtyOut: newOut,
-            availableStock: b.openingStock + b.qtyIn - newOut,
-            lastTransactionDate: recordData.date,
-          };
-        }
-        return b;
-      })
+    const existingBal = inventory.find(
+      (b) => (b.materialId === material.id || b.itemId === material.id) && b.locationId === recordData.locationId
     );
 
-    setConsumptions((prev) => [newRecord, ...prev]);
-    logAudit('CONSUMPTION_RECORDED', 'Pemakaian Tissue & Plastik', `Pemakaian ${recordData.quantityUsed} ${material.unit} ${material.materialName} di ${recordData.areaOrToilet} (${recordData.shift})`);
-    showToast('success', 'Pemakaian Tercatat', `Pemakaian ${material.materialName} telah dicatat dan stok dipotong.`);
-    return true;
+    try {
+      await runTransaction(db, async (transaction) => {
+        // 1. Post DAILY_CONSUMPTION movement inside transaction (strictly checks anti-negative stock)
+        await executeInventoryMovementInTransaction(
+          transaction,
+          db,
+          {
+            materialId: material.id,
+            materialCode: material.materialCode,
+            materialName: material.materialName,
+            locationId: recordData.locationId,
+            locationName: recordData.locationName,
+            unit: material.unit,
+            variantValue: material.variantValue || '',
+            movementType: 'DAILY_CONSUMPTION',
+            quantity: recordData.quantityUsed,
+            delta: -recordData.quantityUsed,
+            sourceDocumentId: consId,
+            sourceDocumentType: 'consumptions',
+            idempotencyKey: generateIdempotencyKey('CONS', consId, material.id, recordData.locationId, 'DAILY_CONSUMPTION'),
+            actorName: currentUser!.fullName,
+            actorEmployeeId: currentUser!.employeeId,
+            notes: `Pemakaian operasional ${recordData.areaOrToilet} (${recordData.shift})`,
+            timestamp: now,
+          },
+          {
+            customBalanceDocId: existingBal?.id,
+          }
+        );
+
+        // 2. Persist consumption record in Firestore
+        const consDocRef = doc(db, 'consumptions', consId);
+        transaction.set(consDocRef, sanitizeFirestoreDoc(newRecord));
+      });
+
+      await logAudit(
+        'CONSUMPTION_RECORDED',
+        'Posisi Persediaan',
+        `Pencatatan konsumsi ${recordData.quantityUsed} ${material.unit} ${material.materialName} di ${recordData.areaOrToilet} (${recordData.locationName})`
+      );
+      showToast('success', 'Pemakaian Tercatat', `Pemakaian ${material.materialName} telah dicatat dan stok dipotong.`);
+      return true;
+    } catch (err: any) {
+      console.error('[Firestore Error: recordConsumption]', err);
+      showToast('error', 'Gagal Mencatat Pemakaian', err.message || 'Terjadi kesalahan transaksi.');
+      return false;
+    }
   };
 
   // ----------------------------------------------------
@@ -3059,7 +3294,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setLocations(updatedLocations);
     } else if (moduleType === 'INVENTORY_OPENING') {
-      // Opening balance import workflow (Rule 5.2)
+      const operations: Array<{
+        balanceDoc: InventoryBalance;
+        movementDoc: InventoryMovement;
+      }> = [];
+
       rawRows.forEach((row, idx) => {
         const rowNum = idx + 2;
         const matCode = String(row.materialCode || '').trim().toUpperCase();
@@ -3083,51 +3322,87 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return;
         }
 
-        setInventory((prev) => {
-          const existing = prev.find(
-            (b) => b.materialId === material.id && b.locationId === location.id
-          );
-          if (existing) {
-            return prev.map((b) => {
-              if (b.id === existing.id) {
-                return {
-                  ...b,
-                  openingStock,
-                  availableStock: openingStock + b.qtyIn - b.qtyOut,
-                  minimumStock: row.minimumStock ? Number(row.minimumStock) : b.minimumStock,
-                  reorderPoint: row.reorderPoint ? Number(row.reorderPoint) : b.reorderPoint,
-                  lastTransactionDate: now.split(' ')[0],
-                };
-              }
-              return b;
-            });
-          } else {
-            const newBal: InventoryBalance = {
-              id: 'bal-' + Date.now() + '-' + idx,
-              materialId: material.id,
-              materialCode: material.materialCode,
-              materialName: material.materialName,
-              categoryId: material.categoryId,
-              categoryName: material.categoryName,
-              unit: material.unit,
-              locationId: location.id,
-              locationName: location.name,
-              variantValue: row.variantValue || material.variantValue,
-              openingStock,
-              qtyIn: 0,
-              qtyOut: 0,
-              availableStock: openingStock,
-              minimumStock: row.minimumStock ? Number(row.minimumStock) : material.minimumStock,
-              reorderPoint: row.reorderPoint ? Number(row.reorderPoint) : material.reorderPoint,
-              lastTransactionDate: now.split(' ')[0],
-              unitCost: material.unitCost,
-            };
-            return [newBal, ...prev];
-          }
-        });
+        const balId = getCanonicalBalanceId(material.id, location.id);
+        const existing = inventory.find(
+          (b) => (b.materialId === material.id || b.itemId === material.id) && b.locationId === location.id
+        );
 
+        const availableStock = existing
+          ? openingStock + (existing.qtyIn || 0) - (existing.qtyOut || 0) + (existing.totalAdjustments || 0)
+          : openingStock;
+
+        const movementId = `mov-open-${material.id}-${location.id}-${Date.now()}`;
+        const balDoc: InventoryBalance = {
+          id: existing?.id || balId,
+          materialId: material.id,
+          itemId: material.id,
+          materialCode: material.materialCode,
+          itemCode: material.materialCode,
+          materialName: material.materialName,
+          itemName: material.materialName,
+          categoryId: material.categoryId,
+          categoryName: material.categoryName,
+          unit: material.unit,
+          locationId: location.id,
+          locationName: location.name,
+          variantValue: row.variantValue || material.variantValue || '',
+          openingStock,
+          qtyIn: existing?.qtyIn || 0,
+          qtyOut: existing?.qtyOut || 0,
+          totalAdjustments: existing?.totalAdjustments || 0,
+          availableStock,
+          minimumStock: row.minimumStock ? Number(row.minimumStock) : material.minimumStock,
+          reorderPoint: row.reorderPoint ? Number(row.reorderPoint) : material.reorderPoint,
+          lastTransactionDate: now.split(' ')[0],
+          unitCost: material.unitCost || 0,
+          version: (existing?.version || 0) + 1,
+          lastMovementId: movementId,
+          updatedAt: now,
+          updatedBy: currentUser?.employeeId || 'IMPORT',
+        };
+
+        const movementDoc: InventoryMovement = {
+          id: movementId,
+          movementId,
+          materialId: material.id,
+          materialCode: material.materialCode,
+          materialName: material.materialName,
+          locationId: location.id,
+          locationName: location.name,
+          unit: material.unit,
+          variantValue: row.variantValue || material.variantValue || '',
+          movementType: 'OPENING_BALANCE',
+          quantity: openingStock,
+          delta: openingStock,
+          balanceBefore: 0,
+          balanceAfter: openingStock,
+          sourceDocumentId: `open-${material.id}-${location.id}`,
+          sourceDocumentType: 'opening',
+          status: 'POSTED',
+          idempotencyKey: generateIdempotencyKey('OPENING', 'import', material.id, location.id, 'OPENING_BALANCE'),
+          createdTimestampMs: Date.now(),
+          postingSequence: Date.now() + idx,
+          notes: 'Import Saldo Awal Excel',
+          recordedBy: currentUser?.fullName || 'Import Excel',
+          recordedByEmployeeId: currentUser?.employeeId || 'IMPORT',
+          createdAt: now,
+        };
+
+        operations.push({ balanceDoc: balDoc, movementDoc });
         successCount++;
       });
+
+      if (operations.length > 0) {
+        // Commit chunked batches to Firestore (chunkSize 200 items = 400 operations, strictly <= 500 limit)
+        commitInChunks(operations, 200, (chunk, batch) => {
+          for (const op of chunk) {
+            const balRef = doc(db, 'inventory', op.balanceDoc.id);
+            batch.set(balRef, sanitizeFirestoreDoc(op.balanceDoc));
+            const movRef = doc(db, 'inventoryMovements', op.movementDoc.id);
+            batch.set(movRef, sanitizeFirestoreDoc(op.movementDoc));
+          }
+        }).catch((err) => console.error('[Firestore Error: commitInChunks INVENTORY_OPENING]', err));
+      }
     }
 
     logAudit('EXCEL_IMPORTED', moduleType, `Import Excel selesai: ${successCount} berhasil, ${errors.length} gagal.`);
@@ -3571,6 +3846,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         activeUnits,
         inventory,
         items: inventory, // backward compatible
+        inventoryMovements,
         consumptions,
         morganTrolleys,
         supplyRequests,

@@ -172,13 +172,13 @@ export const PosisiPersediaan: React.FC = () => {
   };
 
   // Submit Consumption
-  const handleSubmitConsumption = (e: React.FormEvent) => {
+  const handleSubmitConsumption = async (e: React.FormEvent) => {
     e.preventDefault();
     const mat = activeMaterials.find((m) => m.id === consMatId);
     const loc = activeLocations.find((l) => l.id === consLocId);
     if (!mat || !loc) return;
 
-    const ok = recordConsumption({
+    const ok = await recordConsumption({
       date: consDate,
       locationId: loc.id,
       locationName: loc.name,

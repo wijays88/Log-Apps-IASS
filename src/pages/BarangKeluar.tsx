@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   ArrowUpFromLine,
@@ -13,14 +13,17 @@ import {
   X,
   AlertTriangle,
   Eye,
+  Warehouse,
+  Package,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
 
 export const BarangKeluar: React.FC = () => {
   const {
     goodsIssues,
-    items,
-    requestingUnits,
+    inventory,
+    activeMaterials,
+    activeLocations,
     activeRequestingUnits,
     createGoodsIssue,
     currentUser,
@@ -35,17 +38,75 @@ export const BarangKeluar: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form state
+  const [sourceLocationId, setSourceLocationId] = useState<string>(activeLocations[0]?.id || '');
+  const [selectedMaterialId, setSelectedMaterialId] = useState<string>('');
+  const [materialSearchText, setMaterialSearchText] = useState<string>('');
   const [formData, setFormData] = useState({
     requesterUnitId: activeRequestingUnits[0]?.id || '',
     requestingUnit: activeRequestingUnits[0]?.name || '',
     destination: '',
-    itemId: items[0]?.id || '',
     requestedQuantity: 1,
     purpose: '',
     notes: '',
   });
 
-  const selectedItemData = items.find((it) => it.id === formData.itemId);
+  // Keep sourceLocationId in sync with activeLocations
+  useEffect(() => {
+    if (activeLocations.length > 0 && (!sourceLocationId || !activeLocations.some((l) => l.id === sourceLocationId))) {
+      setSourceLocationId(activeLocations[0].id);
+    }
+  }, [activeLocations, sourceLocationId]);
+
+  // Active materials with positive available stock at the selected source location
+  const locationMaterials = useMemo(() => {
+    if (!sourceLocationId) return [];
+    return activeMaterials
+      .map((mat) => {
+        const bal = inventory.find(
+          (inv) =>
+            (inv.materialId === mat.id || inv.itemId === mat.id) &&
+            inv.locationId === sourceLocationId
+        );
+        const stock = bal ? Number(bal.availableStock) || 0 : 0;
+        return {
+          material: mat,
+          availableStock: stock,
+          balance: bal,
+        };
+      })
+      .filter((item) => item.availableStock > 0);
+  }, [activeMaterials, inventory, sourceLocationId]);
+
+  // Filtered materials by search term
+  const searchedMaterials = useMemo(() => {
+    if (!materialSearchText.trim()) return locationMaterials;
+    const q = materialSearchText.toLowerCase();
+    return locationMaterials.filter(
+      (it) =>
+        it.material.materialCode.toLowerCase().includes(q) ||
+        it.material.materialName.toLowerCase().includes(q)
+    );
+  }, [locationMaterials, materialSearchText]);
+
+  // Synchronize selected material when location materials change
+  useEffect(() => {
+    if (locationMaterials.length > 0) {
+      if (!selectedMaterialId || !locationMaterials.some((it) => it.material.id === selectedMaterialId)) {
+        setSelectedMaterialId(locationMaterials[0].material.id);
+      }
+    } else {
+      setSelectedMaterialId('');
+    }
+  }, [locationMaterials, selectedMaterialId]);
+
+  // Selected item resolved data
+  const selectedItemData = useMemo(() => {
+    return locationMaterials.find((it) => it.material.id === selectedMaterialId) || locationMaterials[0] || null;
+  }, [locationMaterials, selectedMaterialId]);
+
+  const selectedLocation = useMemo(() => {
+    return activeLocations.find((l) => l.id === sourceLocationId) || activeLocations[0] || null;
+  }, [activeLocations, sourceLocationId]);
 
   const filteredIssues = goodsIssues.filter((issue) => {
     const matchSearch =
@@ -67,20 +128,30 @@ export const BarangKeluar: React.FC = () => {
       return;
     }
     const defaultUnit = activeRequestingUnits[0];
+    const defaultLoc = activeLocations[0];
+    if (defaultLoc) {
+      setSourceLocationId(defaultLoc.id);
+    }
     setFormData((prev) => ({
       ...prev,
-      itemId: prev.itemId || items[0]?.id || '',
       requesterUnitId: prev.requesterUnitId || defaultUnit?.id || '',
       requestingUnit: prev.requestingUnit || defaultUnit?.name || '',
+      requestedQuantity: 1,
     }));
+    setMaterialSearchText('');
     setModalOpen(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (!selectedLocation) {
+      showToast('error', 'Validasi Gagal', 'Pilih gudang asal pengeluaran.');
+      return;
+    }
+
     if (!selectedItemData) {
-      showToast('error', 'Validasi Gagal', 'Pilih item barang yang tersedia di gudang.');
+      showToast('error', 'Validasi Gagal', 'Pilih item barang dari Master Data yang memiliki saldo stok.');
       return;
     }
 
@@ -106,17 +177,18 @@ export const BarangKeluar: React.FC = () => {
       return;
     }
 
-    if (formData.requestedQuantity <= 0) {
-      showToast('error', 'Validasi Gagal', 'Jumlah permintaan harus lebih besar dari 0.');
+    const qty = Number(formData.requestedQuantity);
+    if (isNaN(qty) || qty <= 0) {
+      showToast('error', 'Validasi Gagal', 'Jumlah permintaan harus berupa angka lebih besar dari 0.');
       return;
     }
 
-    // Business Rule 1: Stock must never become negative
-    if (formData.requestedQuantity > selectedItemData.availableStock) {
+    // Anti-Negative Stock Guard
+    if (qty > selectedItemData.availableStock) {
       showToast(
         'error',
         'Stok Tidak Cukup (Negative Stock Blocked)',
-        `Stok tersedia untuk ${selectedItemData.itemName} hanya ${selectedItemData.availableStock} ${selectedItemData.unit}. Tidak dapat meminta ${formData.requestedQuantity} ${selectedItemData.unit}.`
+        `Stok tersedia untuk ${selectedItemData.material.materialName} di ${selectedLocation.name} hanya ${selectedItemData.availableStock} ${selectedItemData.material.unit}. Tidak dapat mengeluarkan ${qty} ${selectedItemData.material.unit}.`
       );
       return;
     }
@@ -127,9 +199,9 @@ export const BarangKeluar: React.FC = () => {
         requesterUnitId: activeUnit.id,
         requestingUnit: activeUnit.name,
         destination: formData.destination.trim(),
-        materialId: selectedItemData.materialId || selectedItemData.id,
-        locationId: selectedItemData.locationId,
-        requestedQuantity: Number(formData.requestedQuantity),
+        materialId: selectedItemData.material.id,
+        locationId: selectedLocation.id,
+        requestedQuantity: qty,
         purpose: formData.purpose.trim(),
         notes: formData.notes.trim(),
       });
@@ -141,11 +213,11 @@ export const BarangKeluar: React.FC = () => {
           requesterUnitId: nextDefault?.id || '',
           requestingUnit: nextDefault?.name || '',
           destination: '',
-          itemId: items[0]?.id || '',
           requestedQuantity: 1,
           purpose: '',
           notes: '',
         });
+        setMaterialSearchText('');
       }
     } finally {
       setIsSubmitting(false);
@@ -422,69 +494,121 @@ export const BarangKeluar: React.FC = () => {
                 </div>
               </div>
 
-              {items.length === 0 && (
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-amber-800">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                  <div>
-                    <div className="font-bold">Stok Inventaris Belum Tersedia</div>
-                    <div className="text-[11px] text-amber-700 mt-0.5">
-                      Belum ada stok barang yang terdaftar di gudang. Catat penerimaan barang masuk terlebih dahulu.
-                    </div>
-                  </div>
-                </div>
-              )}
-
+              {/* Source Warehouse Selection */}
               <div>
-                <label className="text-slate-600 block mb-1 font-semibold">Item Barang</label>
-                <select
-                  required
-                  disabled={items.length === 0}
-                  value={formData.itemId}
-                  onChange={(e) => setFormData({ ...formData, itemId: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white disabled:bg-slate-100 disabled:text-slate-400"
-                >
-                  {items.length === 0 ? (
-                    <option value="">-- Tidak ada stok tersedia di gudang --</option>
-                  ) : (
-                    items.map((it) => (
-                      <option key={it.id} value={it.id}>
-                        {it.itemCode} - {it.itemName} (Tersedia: {it.availableStock} {it.unit} di {it.locationName})
+                <label className="text-slate-700 block mb-1 font-bold">Gudang Asal Pengeluaran *</label>
+                <div className="relative">
+                  <select
+                    required
+                    value={sourceLocationId}
+                    onChange={(e) => setSourceLocationId(e.target.value)}
+                    className="w-full px-3 py-2 pl-9 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white font-medium"
+                  >
+                    {activeLocations.map((loc) => (
+                      <option key={loc.id} value={loc.id}>
+                        {loc.name} {loc.type === 'MAIN' ? '(Gudang Utama)' : ''}
                       </option>
-                    ))
-                  )}
-                </select>
+                    ))}
+                  </select>
+                  <Warehouse className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                </div>
               </div>
 
-              {selectedItemData && (
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
-                  <div className="text-slate-600">
-                    <div>Lokasi Gudang: <span className="font-semibold text-slate-800">{selectedItemData.locationName}</span></div>
-                    <div className="text-[11px] text-slate-400">SKU: {selectedItemData.itemCode}</div>
+              {/* Material Search & Selection */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-slate-700 font-bold">Pilih Material Barang (Master Data) *</label>
+                  <span className="text-[11px] text-slate-500 font-medium">
+                    {locationMaterials.length} material bersaldo positif di gudang ini
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Cari kode atau nama material..."
+                      value={materialSearchText}
+                      onChange={(e) => setMaterialSearchText(e.target.value)}
+                      className="w-full px-3 py-1.5 pl-8 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-slate-50"
+                    />
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none" />
                   </div>
-                  <div className="text-right">
-                    <div className="text-[11px] text-slate-500">Stok Tersedia Saat Ini</div>
-                    <div className={`text-base font-extrabold font-mono ${selectedItemData.availableStock <= selectedItemData.minimumStock ? 'text-rose-600' : 'text-emerald-700'}`}>
-                      {selectedItemData.availableStock} {selectedItemData.unit}
+
+                  <select
+                    required
+                    disabled={locationMaterials.length === 0}
+                    value={selectedMaterialId}
+                    onChange={(e) => setSelectedMaterialId(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white font-medium disabled:bg-slate-100 disabled:text-slate-400"
+                  >
+                    {locationMaterials.length === 0 ? (
+                      <option value="">-- Tidak ada stok barang tersedia di gudang ini --</option>
+                    ) : (
+                      searchedMaterials.map((it) => (
+                        <option key={it.material.id} value={it.material.id}>
+                          [{it.material.materialCode}] {it.material.materialName} (Tersedia: {it.availableStock} {it.material.unit})
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              {/* Verified Authoritative Stock Preview Card */}
+              {selectedItemData && selectedLocation && (
+                <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-1.5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        {selectedItemData.material.materialName}
+                      </div>
+                      <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                        <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200">
+                          SKU: {selectedItemData.material.materialCode}
+                        </span>
+                        <span>•</span>
+                        <span>Lokasi: {selectedLocation.name}</span>
+                        <span>•</span>
+                        <span>UoM: {selectedItemData.material.unit}</span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                        Stok Tersedia
+                      </div>
+                      <div className="text-base font-extrabold font-mono text-emerald-800">
+                        {selectedItemData.availableStock} {selectedItemData.material.unit}
+                      </div>
                     </div>
                   </div>
                 </div>
               )}
 
+              {locationMaterials.length === 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-amber-900">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="text-[11px] leading-relaxed">
+                    <span className="font-bold">Gudang ini tidak memiliki stok barang aktif.</span> Silakan pilih gudang lain atau catat penerimaan barang masuk terlebih dahulu.
+                  </div>
+                </div>
+              )}
+
               <div>
-                <label className="text-slate-600 block mb-1 font-semibold">Kuantitas yang Diminta</label>
+                <label className="text-slate-700 block mb-1 font-bold">Kuantitas yang Diminta *</label>
                 <input
                   type="number"
                   min="1"
                   max={selectedItemData ? selectedItemData.availableStock : 99999}
                   required
                   value={formData.requestedQuantity}
-                  onChange={(e) => setFormData({ ...formData, requestedQuantity: Number(e.target.value) })}
+                  onChange={(e) => setFormData({ ...formData, requestedQuantity: e.target.value as any })}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] font-mono font-bold"
                 />
-                {selectedItemData && formData.requestedQuantity > selectedItemData.availableStock && (
+                {selectedItemData && Number(formData.requestedQuantity) > selectedItemData.availableStock && (
                   <p className="text-[11px] text-rose-600 font-semibold mt-1 flex items-center gap-1">
                     <AlertTriangle className="w-3.5 h-3.5" />
-                    Permintaan melebihi stok tersedia. Aturan sistem melarang saldo negatif.
+                    Permintaan ({formData.requestedQuantity}) melebihi stok tersedia ({selectedItemData.availableStock} {selectedItemData.material.unit}). Saldo negatif dicegah oleh sistem.
                   </p>
                 )}
               </div>
@@ -516,7 +640,13 @@ export const BarangKeluar: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={items.length === 0 || !selectedItemData || formData.requestedQuantity > selectedItemData.availableStock || isSubmitting}
+                disabled={
+                  locationMaterials.length === 0 ||
+                  !selectedItemData ||
+                  Number(formData.requestedQuantity) <= 0 ||
+                  Number(formData.requestedQuantity) > selectedItemData.availableStock ||
+                  isSubmitting
+                }
                 className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
                 {isSubmitting ? 'Mengirim...' : 'Kirim Permohonan Keluar'}

@@ -107,15 +107,70 @@ export interface InventoryBalance {
   openingStock: number;
   qtyIn: number;
   qtyOut: number;
-  availableStock: number; // Closing Stock = Opening + QtyIn - QtyOut + Adjustments
+  totalAdjustments?: number; // Cumulative net physical adjustments from approved Stock Opname
+  availableStock: number; // Authoritative running available stock
   minimumStock: number;
   reorderPoint: number;
   lastTransactionDate: string;
   unitCost?: number;
+  version?: number; // Optimistic locking sequence
+  lastMovementId?: string;
+  lastOpnameDate?: string;
+  lastOpnameNumber?: string;
+  lastOpnameVariance?: number;
+  updatedAt?: string;
+  updatedBy?: string;
 }
 
 // Backward-compatible alias for existing views
 export type InventoryItem = InventoryBalance;
+
+export type MovementType =
+  | 'OPENING_BALANCE'
+  | 'GOODS_RECEIPT'
+  | 'GOODS_ISSUE'
+  | 'TRANSFER_DISPATCH'
+  | 'TRANSFER_RECEIPT'
+  | 'TRANSFER_RETURN'
+  | 'TRANSFER_LOSS'
+  | 'TRANSFER_DAMAGE'
+  | 'STOCK_OPNAME_ADJUSTMENT'
+  | 'DAILY_CONSUMPTION'
+  | 'ADMIN_CORRECTION';
+
+export interface InventoryMovement {
+  id: string; // movementId
+  movementId: string;
+  materialId: string;
+  materialCode: string;
+  materialName: string;
+  locationId: string;
+  locationName: string;
+  unit: string;
+  variantValue?: string;
+  movementType: MovementType;
+  quantity: number; // Positive absolute quantity
+  delta: number; // Signed delta (+ increases stock, - decreases stock)
+  balanceBefore: number;
+  balanceAfter: number;
+  sourceDocumentId: string;
+  sourceDocumentType: string; // 'goodsReceipts' | 'goodsIssues' | 'stockTransfers' | 'stockOpnames' | 'consumptions' | 'admin' | 'opening'
+  sourceLineId?: string;
+  status: 'POSTED' | 'REVERSED';
+  idempotencyKey: string;
+  createdAt: string; // Jakarta timestamp string (YYYY-MM-DD HH:mm:ss)
+  createdTimestampMs: number; // UTC ms epoch for deterministic sorting
+  createdByUid?: string;
+  createdByName?: string;
+  createdByEmployeeId?: string;
+  recordedBy?: string; // alias for createdByName
+  recordedByEmployeeId?: string; // alias for createdByEmployeeId
+  postingSequence: number;
+  referenceNumber?: string; // e.g. 'GR-2026-001', 'GI-2026-801', 'TR-2026-101', 'SO-2026-041'
+  approvalReference?: string;
+  reversalReference?: string;
+  notes?: string;
+}
 
 export interface MasterRequestingUnit {
   id: string;
@@ -199,6 +254,9 @@ export type TransferRejectionDisposition =
   | 'LOST_IN_TRANSIT'
   | 'CANCELLED_BEFORE_DISPATCH';
 
+export const IN_TRANSIT_LOCATION_ID = 'loc-in-transit';
+export const IN_TRANSIT_LOCATION_NAME = 'Barang Dalam Perjalanan (In-Transit)';
+
 export interface StockTransfer {
   id: string;
   transferNumber: string; // TR-2026-XXXX
@@ -248,6 +306,16 @@ export interface StockOpname {
   adjustedAt?: string;
   notes: string;
   createdAt: string;
+  // Concurrency & snapshot fields for physical count cutoff
+  countStartedAt?: string;
+  countCompletedAt?: string;
+  systemBalanceAtCount?: number;
+  lastMovementAtCount?: string;
+  countVersion?: number;
+  adjustedBalance?: number;
+  adjustmentDelta?: number;
+  interveningMovementsCount?: number;
+  adjustmentMovementId?: string;
 }
 
 // Operational Module: Tissue & Plastic Consumption (Pemakaian Harian/Shift)

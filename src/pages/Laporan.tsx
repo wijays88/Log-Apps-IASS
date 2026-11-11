@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   FileBarChart,
@@ -16,6 +16,7 @@ import {
   MapPin,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
+import { InventoryBalance, GoodsReceipt, GoodsIssue, StockTransfer } from '../types';
 
 type ReportType =
   | 'CURRENT_INVENTORY'
@@ -63,6 +64,37 @@ export const Laporan: React.FC = () => {
     window.print();
   };
 
+  const filterLoc = (locId?: string, locName?: string) => {
+    if (selectedLocation === 'ALL') return true;
+    return locId === selectedLocation || locName === selectedLocation;
+  };
+
+  const filterDate = (dateStr?: string) => {
+    if (!dateStr) return true;
+    const d = dateStr.slice(0, 10);
+    return (!startDate || d >= startDate) && (!endDate || d <= endDate);
+  };
+
+  const filteredItems: InventoryBalance[] = useMemo(
+    () => items.filter((i: InventoryBalance) => filterLoc(i.locationId, i.locationName)),
+    [items, selectedLocation]
+  );
+
+  const filteredReceipts: GoodsReceipt[] = useMemo(
+    () => goodsReceipts.filter((r: GoodsReceipt) => filterLoc(r.destinationLocationId, r.destinationLocationName) && filterDate(r.receiptDate || r.createdAt)),
+    [goodsReceipts, selectedLocation, startDate, endDate]
+  );
+
+  const filteredIssues: GoodsIssue[] = useMemo(
+    () => goodsIssues.filter((i: GoodsIssue) => filterLoc(i.locationId, i.locationName) && filterDate(i.requestDate || i.approvedAt || i.createdAt)),
+    [goodsIssues, selectedLocation, startDate, endDate]
+  );
+
+  const filteredTransfers: StockTransfer[] = useMemo(
+    () => stockTransfers.filter((t: StockTransfer) => (filterLoc(t.originLocationId, t.originLocationName) || filterLoc(t.destinationLocationId, t.destinationLocationName)) && filterDate(t.requestDate || t.dispatchedAt || t.receivedAt || t.createdAt)),
+    [stockTransfers, selectedLocation, startDate, endDate]
+  );
+
   const handleExportCSV = () => {
     let headers: string[] = [];
     let rows: (string | number)[][] = [];
@@ -70,7 +102,7 @@ export const Laporan: React.FC = () => {
 
     if (selectedReport === 'CURRENT_INVENTORY') {
       headers = ['Kode Item', 'Nama Item', 'Kategori', 'Satuan', 'Gudang', 'Stok Tersedia', 'Stok Min', 'ROP', 'Nilai Estimasi'];
-      rows = items.map((i) => [
+      rows = filteredItems.map((i) => [
         `"${i.itemCode}"`,
         `"${i.itemName}"`,
         `"${i.categoryName}"`,
@@ -83,7 +115,7 @@ export const Laporan: React.FC = () => {
       ]);
     } else if (selectedReport === 'GOODS_RECEIPTS') {
       headers = ['No Penerimaan', 'Tanggal', 'Pemasok', 'Dokumen Ref', 'Nama Item', 'Qty', 'Satuan', 'Lokasi', 'Petugas'];
-      rows = goodsReceipts.map((r) => [
+      rows = filteredReceipts.map((r) => [
         `"${r.receiptNumber}"`,
         `"${r.receiptDate}"`,
         `"${r.sourceSupplier}"`,
@@ -96,7 +128,7 @@ export const Laporan: React.FC = () => {
       ]);
     } else if (selectedReport === 'GOODS_ISSUES') {
       headers = ['No Pengeluaran', 'Tanggal', 'Unit Pemohon', 'Tujuan', 'Item', 'Qty Diminta', 'Qty Disetujui', 'Status', 'Petugas'];
-      rows = goodsIssues.map((g) => [
+      rows = filteredIssues.map((g) => [
         `"${g.issueNumber}"`,
         `"${g.requestDate}"`,
         `"${g.requestingUnit}"`,
@@ -109,7 +141,7 @@ export const Laporan: React.FC = () => {
       ]);
     } else if (selectedReport === 'STOCK_TRANSFERS') {
       headers = ['No Transfer', 'Tanggal', 'Unit Inisiator', 'Gudang Asal', 'Gudang Tujuan', 'Item', 'Kuantitas', 'Satuan', 'Status', 'Petugas'];
-      rows = stockTransfers.map((t) => [
+      rows = filteredTransfers.map((t) => [
         `"${t.transferNumber}"`,
         `"${t.requestDate}"`,
         `"${t.requestingUnit || '-'}"`,
@@ -123,7 +155,7 @@ export const Laporan: React.FC = () => {
       ]);
     } else {
       headers = ['Kode/No', 'Keterangan', 'Lokasi', 'Tanggal'];
-      rows = items.map((i) => [`"${i.itemCode}"`, `"${i.itemName}"`, `"${i.locationName}"`, `"${i.lastTransactionDate}"`]);
+      rows = filteredItems.map((i) => [`"${i.itemCode}"`, `"${i.itemName}"`, `"${i.locationName}"`, `"${i.lastTransactionDate}"`]);
     }
 
     const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
@@ -277,14 +309,14 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {items.length === 0 ? (
+                {filteredItems.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-10 text-center text-slate-400">
-                      Belum ada data saldo stok inventaris yang terdaftar.
+                      Belum ada data saldo stok inventaris yang terdaftar sesuai filter.
                     </td>
                   </tr>
                 ) : (
-                  items.map((it) => (
+                  filteredItems.map((it) => (
                     <tr key={it.id} className="hover:bg-slate-50">
                       <td className="py-2 px-3 font-mono font-bold text-slate-800">{it.itemCode}</td>
                       <td className="py-2 px-3 font-medium text-slate-900">{it.itemName}</td>
@@ -322,14 +354,14 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {goodsReceipts.length === 0 ? (
+                {filteredReceipts.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-10 text-center text-slate-400">
-                      Belum ada transaksi penerimaan barang dalam periode ini.
+                      Belum ada transaksi penerimaan barang dalam periode ini sesuai filter.
                     </td>
                   </tr>
                 ) : (
-                  goodsReceipts.map((gr) => (
+                  filteredReceipts.map((gr) => (
                     <tr key={gr.id} className="hover:bg-slate-50">
                       <td className="py-2 px-3 font-mono font-bold text-emerald-900">{gr.receiptNumber}</td>
                       <td className="py-2 px-3 font-mono text-slate-600">{gr.receiptDate}</td>
@@ -366,14 +398,14 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {goodsIssues.length === 0 ? (
+                {filteredIssues.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="py-10 text-center text-slate-400">
-                      Belum ada transaksi pengeluaran barang dalam periode ini.
+                      Belum ada transaksi pengeluaran barang dalam periode ini sesuai filter.
                     </td>
                   </tr>
                 ) : (
-                  goodsIssues.map((gi) => (
+                  filteredIssues.map((gi) => (
                     <tr key={gi.id} className="hover:bg-slate-50">
                       <td className="py-2 px-3 font-mono font-bold text-indigo-900">{gi.issueNumber}</td>
                       <td className="py-2 px-3 font-mono text-slate-600">{gi.requestDate}</td>

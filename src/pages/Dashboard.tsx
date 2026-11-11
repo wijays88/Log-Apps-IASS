@@ -90,8 +90,13 @@ export const Dashboard: React.FC = () => {
   const todayReceipts = goodsReceipts.filter((gr) => gr.receiptDate?.startsWith(todayStr) || gr.createdAt?.startsWith(todayStr));
   const todayReceiptsCount = todayReceipts.reduce((sum, r) => sum + (Number(r.quantity) || 0), 0);
 
-  const todayIssues = goodsIssues.filter((gi) => gi.requestDate?.startsWith(todayStr) || gi.createdAt?.startsWith(todayStr));
-  const todayIssuesCount = todayIssues.reduce((sum, i) => sum + (Number(i.requestedQuantity) || 0), 0);
+  const todayIssues = goodsIssues.filter(
+    (gi) => gi.status === 'APPROVED' && (gi.approvedAt?.startsWith(todayStr) || gi.requestDate?.startsWith(todayStr) || gi.createdAt?.startsWith(todayStr))
+  );
+  const todayIssuesCount = todayIssues.reduce(
+    (sum, i) => sum + (Number(i.approvedQuantity ?? i.requestedQuantity) || 0),
+    0
+  );
 
   const criticalItems = useMemo(
     () => items.filter((item) => item.availableStock > 0 && item.availableStock <= item.minimumStock),
@@ -100,6 +105,11 @@ export const Dashboard: React.FC = () => {
 
   const emptyStockItems = useMemo(
     () => items.filter((item) => Number(item.availableStock) <= 0),
+    [items]
+  );
+
+  const negativeStockItems = useMemo(
+    () => items.filter((item) => Number(item.availableStock) < 0),
     [items]
   );
 
@@ -246,6 +256,21 @@ export const Dashboard: React.FC = () => {
         {/* Subtle Decorative Aura */}
         <div className="absolute right-0 bottom-0 translate-x-12 translate-y-8 w-64 h-64 rounded-full bg-white/10 blur-2xl pointer-events-none" />
       </div>
+
+      {/* Inventory Integrity Exception Alert */}
+      {negativeStockItems.length > 0 && (
+        <div className="p-4 bg-rose-50 border border-rose-300 rounded-2xl flex items-start gap-3 text-rose-900 shadow-xs animate-in fade-in">
+          <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+          <div className="flex-1 text-xs">
+            <div className="font-bold text-sm text-rose-800 flex items-center gap-2">
+              <span>Peringatan Integritas Persediaan: Ditemukan {negativeStockItems.length} Item Bersaldo Negatif</span>
+            </div>
+            <div className="mt-1 text-rose-700 leading-relaxed">
+              Sistem mendeteksi adanya saldo fisik negatif pada data inventaris ({negativeStockItems.map((i) => `${i.materialCode} di ${i.locationName} [${i.availableStock} ${i.unit}]`).slice(0, 3).join(', ')}). Pengeluaran baru otomatis dicegah oleh aturan anti-stok-negatif sampai dilakukan penyesuaian opname atau penerimaan barang.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 10 Executive KPI Cards Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
