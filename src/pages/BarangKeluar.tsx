@@ -17,6 +17,11 @@ import {
   Package,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
+import {
+  calculateUnreservedAvailableStock,
+  getCanonicalBalanceId,
+  getPendingGoodsIssueReservedQty,
+} from '../services/inventoryEngine';
 
 export const BarangKeluar: React.FC = () => {
   const {
@@ -26,6 +31,7 @@ export const BarangKeluar: React.FC = () => {
     activeLocations,
     activeRequestingUnits,
     createGoodsIssue,
+    fetchLiveStockBalance,
     currentUser,
     can,
     showToast,
@@ -36,6 +42,8 @@ export const BarangKeluar: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [modalOpen, setModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [liveSelectedStock, setLiveSelectedStock] = useState<number | null>(null);
+  const [isCheckingLiveStock, setIsCheckingLiveStock] = useState(false);
 
   // Form state
   const [sourceLocationId, setSourceLocationId] = useState<string>(activeLocations[0]?.id || '');
@@ -57,16 +65,22 @@ export const BarangKeluar: React.FC = () => {
     }
   }, [activeLocations, sourceLocationId]);
 
-  // Active materials with positive available stock at the selected source location
+  // Active materials with positive available stock at the selected source location (multi-key SKU match)
   const locationMaterials = useMemo(() => {
     if (!sourceLocationId) return [];
     return activeMaterials
       .map((mat) => {
-        const bal = inventory.find(
+        const canonicalId = getCanonicalBalanceId(mat.id, sourceLocationId);
+        const matches = inventory.filter(
           (inv) =>
-            (inv.materialId === mat.id || inv.itemId === mat.id) &&
+            (inv.materialId === mat.id ||
+              inv.itemId === mat.id ||
+              (mat.materialCode && (inv.materialCode === mat.materialCode || inv.itemCode === mat.materialCode))) &&
             inv.locationId === sourceLocationId
         );
+        const bal =
+          matches.find((m) => m.id === canonicalId) ||
+          [...matches].sort((a, b) => (Number(b.version) || 0) - (Number(a.version) || 0))[0];
         const stock = bal ? Number(bal.availableStock) || 0 : 0;
         return {
           material: mat,
@@ -103,6 +117,51 @@ export const BarangKeluar: React.FC = () => {
   const selectedItemData = useMemo(() => {
     return locationMaterials.find((it) => it.material.id === selectedMaterialId) || locationMaterials[0] || null;
   }, [locationMaterials, selectedMaterialId]);
+
+  // Live Firestore balance verification whenever modal opens or selected SKU/location changes
+  useEffect(() => {
+    let active = true;
+    if (!modalOpen || !selectedItemData || !sourceLocationId) {
+      setLiveSelectedStock(null);
+      return;
+    }
+    setIsCheckingLiveStock(true);
+    fetchLiveStockBalance(
+      selectedItemData.material.id,
+      sourceLocationId,
+      selectedItemData.material.materialCode
+    )
+      .then((liveVal) => {
+        if (active) {
+          setLiveSelectedStock(liveVal);
+        }
+      })
+      .finally(() => {
+        if (active) setIsCheckingLiveStock(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [modalOpen, selectedItemData?.material.id, selectedItemData?.material.materialCode, sourceLocationId, fetchLiveStockBalance]);
+
+  const effectiveAvailableStock = liveSelectedStock !== null
+    ? liveSelectedStock
+    : selectedItemData?.availableStock ?? 0;
+
+  const pendingQtyForSelected = useMemo(() => {
+    if (!selectedItemData || !sourceLocationId) return 0;
+    return getPendingGoodsIssueReservedQty(
+      goodsIssues,
+      selectedItemData.material.id,
+      sourceLocationId,
+      selectedItemData.material.materialCode
+    );
+  }, [goodsIssues, selectedItemData, sourceLocationId]);
+
+  const unreservedAvailableStock = calculateUnreservedAvailableStock(
+    effectiveAvailableStock,
+    pendingQtyForSelected
+  );
 
   const selectedLocation = useMemo(() => {
     return activeLocations.find((l) => l.id === sourceLocationId) || activeLocations[0] || null;
@@ -183,18 +242,37 @@ export const BarangKeluar: React.FC = () => {
       return;
     }
 
-    // Anti-Negative Stock Guard
-    if (qty > selectedItemData.availableStock) {
-      showToast(
-        'error',
-        'Stok Tidak Cukup (Negative Stock Blocked)',
-        `Stok tersedia untuk ${selectedItemData.material.materialName} di ${selectedLocation.name} hanya ${selectedItemData.availableStock} ${selectedItemData.material.unit}. Tidak dapat mengeluarkan ${qty} ${selectedItemData.material.unit}.`
-      );
-      return;
-    }
-
     setIsSubmitting(true);
     try {
+      // Live authoritative Firestore re-check right before creating GI
+      const latestAvailable = await fetchLiveStockBalance(
+        selectedItemData.material.id,
+        selectedLocation.id,
+        selectedItemData.material.materialCode
+      );
+      setLiveSelectedStock(latestAvailable);
+
+      if (latestAvailable <= 0) {
+        showToast(
+          'error',
+          'Stok Habis (Blocked)',
+          `Saldo otoritatif ${selectedItemData.material.materialName} di ${selectedLocation.name} adalah ${latestAvailable} ${selectedItemData.material.unit}. Item bersaldo <= 0 tidak dapat dikeluarkan.`
+        );
+        return;
+      }
+
+      const unreservedAtSubmit = calculateUnreservedAvailableStock(latestAvailable, pendingQtyForSelected);
+
+      // Anti-Negative & Pending Reservation Stock Guard
+      if (qty > unreservedAtSubmit) {
+        showToast(
+          'error',
+          'Reservasi / Stok Tidak Cukup',
+          `Stok live di ${selectedLocation.name}: ${latestAvailable} ${selectedItemData.material.unit}, tereservasi pending: ${pendingQtyForSelected} ${selectedItemData.material.unit}, tersedia bebas: ${unreservedAtSubmit} ${selectedItemData.material.unit}. Tidak dapat mengajukan ${qty} ${selectedItemData.material.unit}.`
+        );
+        return;
+      }
+
       const success = await createGoodsIssue({
         requesterUnitId: activeUnit.id,
         requestingUnit: activeUnit.name,
@@ -557,13 +635,13 @@ export const BarangKeluar: React.FC = () => {
 
               {/* Verified Authoritative Stock Preview Card */}
               {selectedItemData && selectedLocation && (
-                <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-1.5">
+                <div className={`p-3 rounded-xl space-y-1.5 border ${effectiveAvailableStock <= 0 ? 'bg-rose-50/70 border-rose-200' : 'bg-emerald-50/60 border-emerald-200'}`}>
                   <div className="flex items-start justify-between">
                     <div>
                       <div className="font-bold text-slate-900 text-xs">
                         {selectedItemData.material.materialName}
                       </div>
-                      <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                      <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5 flex-wrap">
                         <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200">
                           SKU: {selectedItemData.material.materialCode}
                         </span>
@@ -572,13 +650,21 @@ export const BarangKeluar: React.FC = () => {
                         <span>•</span>
                         <span>UoM: {selectedItemData.material.unit}</span>
                       </div>
+                      {pendingQtyForSelected > 0 && (
+                        <div className="mt-1.5 text-[11px] font-semibold text-amber-800 bg-amber-100/80 border border-amber-200 px-2 py-0.5 rounded inline-flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          <span>
+                            Tereservasi pending: {pendingQtyForSelected} {selectedItemData.material.unit} • Tersedia bebas: {unreservedAvailableStock} {selectedItemData.material.unit}
+                          </span>
+                        </div>
+                      )}
                     </div>
                     <div className="text-right">
                       <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-                        Stok Tersedia
+                        {isCheckingLiveStock ? 'Memeriksa Saldo...' : 'Stok Live Firestore'}
                       </div>
-                      <div className="text-base font-extrabold font-mono text-emerald-800">
-                        {selectedItemData.availableStock} {selectedItemData.material.unit}
+                      <div className={`text-base font-extrabold font-mono ${unreservedAvailableStock <= 0 ? 'text-rose-700' : 'text-emerald-800'}`}>
+                        {effectiveAvailableStock} {selectedItemData.material.unit}
                       </div>
                     </div>
                   </div>
@@ -599,16 +685,18 @@ export const BarangKeluar: React.FC = () => {
                 <input
                   type="number"
                   min="1"
-                  max={selectedItemData ? selectedItemData.availableStock : 99999}
+                  max={selectedItemData ? Math.max(1, unreservedAvailableStock) : 99999}
                   required
                   value={formData.requestedQuantity}
                   onChange={(e) => setFormData({ ...formData, requestedQuantity: e.target.value as any })}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] font-mono font-bold"
                 />
-                {selectedItemData && Number(formData.requestedQuantity) > selectedItemData.availableStock && (
+                {selectedItemData && Number(formData.requestedQuantity) > unreservedAvailableStock && (
                   <p className="text-[11px] text-rose-600 font-semibold mt-1 flex items-center gap-1">
                     <AlertTriangle className="w-3.5 h-3.5" />
-                    Permintaan ({formData.requestedQuantity}) melebihi stok tersedia ({selectedItemData.availableStock} {selectedItemData.material.unit}). Saldo negatif dicegah oleh sistem.
+                    {pendingQtyForSelected > 0
+                      ? `Permintaan (${formData.requestedQuantity}) melebihi sisa tersedia bebas (${unreservedAvailableStock} ${selectedItemData.material.unit}; stok ${effectiveAvailableStock}, tereservasi pending ${pendingQtyForSelected}).`
+                      : `Permintaan (${formData.requestedQuantity}) melebihi stok tersedia (${effectiveAvailableStock} ${selectedItemData.material.unit}). Saldo negatif dicegah oleh sistem.`}
                   </p>
                 )}
               </div>
@@ -643,9 +731,11 @@ export const BarangKeluar: React.FC = () => {
                 disabled={
                   locationMaterials.length === 0 ||
                   !selectedItemData ||
+                  unreservedAvailableStock <= 0 ||
                   Number(formData.requestedQuantity) <= 0 ||
-                  Number(formData.requestedQuantity) > selectedItemData.availableStock ||
-                  isSubmitting
+                  Number(formData.requestedQuantity) > unreservedAvailableStock ||
+                  isSubmitting ||
+                  isCheckingLiveStock
                 }
                 className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] disabled:opacity-50 disabled:cursor-not-allowed transition"
               >

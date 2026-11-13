@@ -118,8 +118,51 @@ export interface InventoryBalance {
   lastOpnameDate?: string;
   lastOpnameNumber?: string;
   lastOpnameVariance?: number;
+  // Official Physical Baseline Metadata
+  baselineQuantity?: number;
+  baselineStockOpnameId?: string;
+  baselineStockOpnameNumber?: string;
+  baselineCutoffAt?: string;
+  baselineCutoffTimestampMs?: number;
+  baselineApprovedAt?: string;
+  baselineApprovedBy?: string;
+  baselineStatus?: BaselineStatus;
+  hasVerifiedBaseline?: boolean;
   updatedAt?: string;
   updatedBy?: string;
+}
+
+// Baseline Status Classification
+export type BaselineStatus = 'VERIFIED' | 'UNVERIFIED' | 'REVIEW_REQUIRED' | 'RECONCILIATION_EXCEPTION';
+
+// Dedicated Official Physical Baseline Record
+export interface InventoryBaseline {
+  id: string; // base-{materialId}-{locationId}-v{version}
+  baselineId: string;
+  materialId: string;
+  materialCode: string;
+  materialName: string;
+  locationId: string;
+  locationName: string;
+  baselineQuantity: number;
+  unit: string;
+  stockOpnameId: string;
+  stockOpnameNumber: string;
+  sourceMovementId: string;
+  countStartedAt?: string;
+  countCompletedAt: string;
+  countCompletedTimestampMs: number;
+  cutoffDate?: string;
+  approvedAt: string;
+  approvedBy: string;
+  approvedByEmployeeId?: string;
+  baselineVersion: number;
+  status: 'ACTIVE' | 'SUPERSEDED';
+  createdAt: string;
+  createdBy: string;
+  supersededAt?: string;
+  supersededBy?: string;
+  notes?: string;
 }
 
 // Backward-compatible alias for existing views
@@ -229,6 +272,7 @@ export interface GoodsIssue {
   requesterUnitId?: string;
   destination: string;
   itemId: string;
+  materialId?: string; // legacy/alias compatibility
   itemCode: string;
   itemName: string;
   variantValue?: string;
@@ -309,6 +353,7 @@ export interface StockOpname {
   // Concurrency & snapshot fields for physical count cutoff
   countStartedAt?: string;
   countCompletedAt?: string;
+  countCompletedTimestampMs?: number;
   systemBalanceAtCount?: number;
   lastMovementAtCount?: string;
   countVersion?: number;
@@ -316,6 +361,8 @@ export interface StockOpname {
   adjustmentDelta?: number;
   interveningMovementsCount?: number;
   adjustmentMovementId?: string;
+  isBaselineAnchor?: boolean;
+  establishedBaselineId?: string;
 }
 
 // Operational Module: Tissue & Plastic Consumption (Pemakaian Harian/Shift)
@@ -349,6 +396,10 @@ export interface MorganTrolleyRecord {
   personInCharge: string;
   lastCheckDate: string;
   notes?: string;
+  createdAt?: string;
+  createdBy?: string;
+  updatedAt?: string;
+  updatedBy?: string;
 }
 
 // Operational Module: Requests and Receipts (Outstanding Tracker)
@@ -368,15 +419,26 @@ export interface SupplyRequestRecord {
   receivedQuantity: number;
   outstandingQuantity: number; // requested - received
   unit: string;
-  status: 'OPEN' | 'PARTIAL' | 'FULFILLED' | 'CANCELLED';
+  status:
+    | 'OPEN'
+    | 'PARTIAL'
+    | 'FULFILLED'
+    | 'REQUESTED'
+    | 'PARTIALLY_RECEIVED'
+    | 'RECEIVED'
+    | 'CANCELLED';
   requestedBy: string;
   notes?: string;
   createdAt: string;
+  updatedAt?: string;
+  updatedBy?: string;
   receiptHistory: Array<{
+    receiptId?: string;
     date: string;
     quantity: number;
     receivedBy: string;
     refNumber: string;
+    movementId?: string;
   }>;
 }
 

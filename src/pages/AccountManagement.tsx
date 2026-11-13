@@ -18,6 +18,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ShieldAlert,
+  Loader2,
+  Mail,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
 import { UserAccount, UserRole, AccountStatus } from '../types';
@@ -47,7 +49,14 @@ export const AccountManagement: React.FC = () => {
   // Modals
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
-  const [resetResultModal, setResetResultModal] = useState<{ name: string; email: string; tempPass: string } | null>(null);
+  const [resetResultModal, setResetResultModal] = useState<{
+    name: string;
+    email: string;
+    mode: 'RESET_EMAIL_SENT' | 'PROVISIONED_NOTICE' | 'FAILED';
+    message: string;
+  } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionUserId, setActionUserId] = useState<string | null>(null);
 
   // Form states for Create/Edit
   const [formEmployeeId, setFormEmployeeId] = useState('');
@@ -112,7 +121,7 @@ export const AccountManagement: React.FC = () => {
     setCreateModalOpen(true);
   };
 
-  const handleCreateSubmit = (e: React.FormEvent) => {
+  const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!formFullName.trim() || !formEmail.trim() || !formEmployeeId.trim()) {
@@ -120,19 +129,24 @@ export const AccountManagement: React.FC = () => {
       return;
     }
 
-    const success = createUserAccount({
-      employeeId: formEmployeeId.trim(),
-      fullName: formFullName.trim(),
-      email: formEmail.trim(),
-      role: formRole,
-      authorizedLocation: formLocation,
-      status: formStatus,
-      phone: formPhone,
-      department: formDepartment,
-    });
+    setIsSubmitting(true);
+    try {
+      const success = await createUserAccount({
+        employeeId: formEmployeeId.trim(),
+        fullName: formFullName.trim(),
+        email: formEmail.trim(),
+        role: formRole,
+        authorizedLocation: formLocation,
+        status: formStatus,
+        phone: formPhone.trim(),
+        department: formDepartment.trim(),
+      });
 
-    if (success) {
-      setCreateModalOpen(false);
+      if (success) {
+        setCreateModalOpen(false);
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -153,47 +167,63 @@ export const AccountManagement: React.FC = () => {
     setFormDepartment(user.department || '');
   };
 
-  const handleEditSubmit = (e: React.FormEvent) => {
+  const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
 
-    const success = updateUserAccount(editingUser.id, {
-      fullName: formFullName.trim(),
-      email: formEmail.trim(),
-      role: formRole,
-      authorizedLocation: formLocation,
-      status: formStatus,
-      phone: formPhone,
-      department: formDepartment,
-    });
+    setIsSubmitting(true);
+    try {
+      const success = await updateUserAccount(editingUser.id, {
+        fullName: formFullName.trim(),
+        email: formEmail.trim(),
+        role: formRole,
+        authorizedLocation: formLocation,
+        status: formStatus,
+        phone: formPhone.trim(),
+        department: formDepartment.trim(),
+      });
 
-    if (success) {
-      setEditingUser(null);
+      if (success) {
+        setEditingUser(null);
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleToggleStatus = (user: UserAccount) => {
+  const handleToggleStatus = async (user: UserAccount) => {
     const perm = can('MANAGE_ACCOUNTS');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Admin yang dapat mengubah status akun.');
       return;
     }
-    toggleUserStatus(user.id);
+    setActionUserId(user.id);
+    try {
+      await toggleUserStatus(user.id);
+    } finally {
+      setActionUserId(null);
+    }
   };
 
-  const handleResetPassword = (user: UserAccount) => {
+  const handleResetPassword = async (user: UserAccount) => {
     const perm = can('MANAGE_ACCOUNTS');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Admin yang dapat mereset kredensial.');
       return;
     }
-    const tempPass = resetUserPassword(user.id);
-    if (tempPass) {
-      setResetResultModal({
-        name: user.fullName,
-        email: user.email,
-        tempPass,
-      });
+    setActionUserId(user.id);
+    try {
+      const res = await resetUserPassword(user.id);
+      if (res.success || res.mode === 'PROVISIONED_NOTICE') {
+        setResetResultModal({
+          name: user.fullName,
+          email: user.email,
+          mode: res.mode,
+          message: res.message,
+        });
+      }
+    } finally {
+      setActionUserId(null);
     }
   };
 
@@ -474,16 +504,17 @@ export const AccountManagement: React.FC = () => {
                             </button>
                             <button
                               onClick={() => handleResetPassword(user)}
-                              className="p-1.5 rounded-lg text-slate-600 hover:text-amber-700 hover:bg-slate-100 transition"
-                              title="Reset Password Kredensial"
+                              disabled={actionUserId === user.id}
+                              className="p-1.5 rounded-lg text-slate-600 hover:text-amber-700 hover:bg-slate-100 transition disabled:opacity-40"
+                              title="Kirim Email Reset Password Firebase Auth"
                             >
                               <Key className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => handleToggleStatus(user)}
-                              disabled={isCurrent}
+                              disabled={isCurrent || actionUserId === user.id}
                               className={`p-1.5 rounded-lg transition ${
-                                isCurrent
+                                isCurrent || actionUserId === user.id
                                   ? 'opacity-30 cursor-not-allowed text-slate-400'
                                   : isUserActive
                                   ? 'text-rose-600 hover:bg-rose-50'
@@ -657,24 +688,27 @@ export const AccountManagement: React.FC = () => {
                 />
               </div>
 
-              <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-[11px] text-emerald-900 leading-relaxed">
-                <span className="font-bold">Keamanan Akun:</span> Pendaftaran publik dinonaktifkan. Akun dibuat secara terpusat oleh Administrator. Password acak awal akan diberikan dan wajib diganti pada saat login pertama.
+              <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-[11px] text-blue-900 leading-relaxed">
+                <span className="font-bold">Catatan Arsitektur Spark (Client SDK):</span> Profil peran (RBAC) disimpan permanen di Firestore. Karena tidak menggunakan Firebase Admin SDK backend, personil baru tetap mendaftar/aktivasi kredensial login pertama melalui layar <strong>Daftar Staf</strong> dengan email perusahaan yang didaftarkan di sini, lalu peran Admin diotorisasi otomatis sesuai profil Firestore.
               </div>
             </div>
 
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => setCreateModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition"
+                disabled={isSubmitting}
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition disabled:opacity-50 flex items-center gap-1.5"
               >
-                Buat Akun
+                {isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isSubmitting ? 'Menyimpan...' : 'Buat Profil Akun'}</span>
               </button>
             </div>
           </form>
@@ -782,16 +816,19 @@ export const AccountManagement: React.FC = () => {
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => setEditingUser(null)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition"
+                disabled={isSubmitting}
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition disabled:opacity-50 flex items-center gap-1.5"
               >
-                Simpan Perubahan
+                {isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isSubmitting ? 'Menyimpan...' : 'Simpan Perubahan'}</span>
               </button>
             </div>
           </form>
@@ -803,21 +840,21 @@ export const AccountManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in">
             <div className="flex items-center gap-2 text-emerald-700 mb-2">
-              <CheckCircle2 className="w-5 h-5" />
+              <Mail className="w-5 h-5" />
               <h3 className="text-sm font-bold text-slate-900">
-                Kredensial Sementara Berhasil Dibuat
+                Pemulihan Kata Sandi Firebase Auth
               </h3>
             </div>
             <p className="text-xs text-slate-600 mb-3">
-              Kredensial sementara telah di-generate untuk personil <strong>{resetResultModal.name}</strong> ({resetResultModal.email}):
+              Status reset kredensial untuk <strong>{resetResultModal.name}</strong> (<span className="font-mono">{resetResultModal.email}</span>):
             </p>
 
-            <div className="p-3 bg-slate-100 rounded-xl border border-slate-300 font-mono text-center text-sm font-extrabold text-slate-900 select-all tracking-wider mb-4">
-              {resetResultModal.tempPass}
+            <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-xs text-blue-950 leading-relaxed mb-4">
+              {resetResultModal.message}
             </div>
 
             <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
-              Karyawan wajib memperbarui kata sandi ini saat login berikutnya pada sistem Logistics Control Tower.
+              Demi keamanan sesuai kebijakan zero-plaintext-password, sistem tidak lagi mencetak sandi acak lokal dan menggunakan mekanisme resmi <span className="font-mono">sendPasswordResetEmail</span> Firebase Authentication.
             </p>
 
             <div className="flex justify-end">

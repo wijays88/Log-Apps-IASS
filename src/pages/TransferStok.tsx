@@ -20,10 +20,16 @@ import {
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
 import { TransferRejectionDisposition } from '../types';
+import {
+  getCanonicalBalanceId,
+  getPendingGoodsIssueReservedQty,
+  calculateUnreservedAvailableStock,
+} from '../services/inventoryEngine';
 
 export const TransferStok: React.FC = () => {
   const {
     stockTransfers,
+    goodsIssues,
     inventory,
     activeMaterials,
     activeLocations,
@@ -91,24 +97,39 @@ export const TransferStok: React.FC = () => {
     return activeLocations.filter((l) => l.id !== originLocationId);
   }, [activeLocations, originLocationId]);
 
-  // Active materials with available stock in the selected origin warehouse
+  // Active materials with available stock & reservation awareness in the selected origin warehouse
   const originStockItems = useMemo(() => {
     if (!originLocationId) return [];
     return activeMaterials
       .map((mat) => {
-        const bal = inventory.find(
+        const canonicalId = getCanonicalBalanceId(mat.id, originLocationId);
+        const matches = inventory.filter(
           (inv) =>
-            (inv.materialId === mat.id || inv.itemId === mat.id) &&
+            (inv.materialId === mat.id ||
+              inv.itemId === mat.id ||
+              (mat.materialCode && (inv.materialCode === mat.materialCode || inv.itemCode === mat.materialCode))) &&
             inv.locationId === originLocationId
         );
-        const stock = bal ? Number(bal.availableStock) || 0 : 0;
+        const bal =
+          matches.find((m) => m.id === canonicalId) ||
+          [...matches].sort((a, b) => (Number(b.version) || 0) - (Number(a.version) || 0))[0];
+        const physicalStock = bal ? Number(bal.availableStock) || 0 : 0;
+        const reservedStock = getPendingGoodsIssueReservedQty(
+          goodsIssues,
+          mat.id,
+          originLocationId,
+          mat.materialCode
+        );
+        const unreservedStock = calculateUnreservedAvailableStock(physicalStock, reservedStock);
         return {
           material: mat,
-          availableStock: stock,
+          physicalStock,
+          reservedStock,
+          availableStock: unreservedStock,
         };
       })
-      .filter((item) => item.availableStock > 0);
-  }, [activeMaterials, inventory, originLocationId]);
+      .filter((item) => item.physicalStock > 0);
+  }, [activeMaterials, inventory, goodsIssues, originLocationId]);
 
   // Synchronize material default when origin stock items change
   useEffect(() => {
@@ -127,6 +148,8 @@ export const TransferStok: React.FC = () => {
   }, [originStockItems, selectedMaterialId]);
 
   const selectedMaterial = selectedItemData?.material || null;
+  const physicalOriginStock = selectedItemData?.physicalStock || 0;
+  const reservedOriginStock = selectedItemData?.reservedStock || 0;
   const availableOriginStock = selectedItemData?.availableStock || 0;
   const currentUnit = selectedMaterial?.unit || 'Pcs';
   const numericQty = quantity === '' ? 0 : Number(quantity);
@@ -594,7 +617,7 @@ export const TransferStok: React.FC = () => {
                   ) : (
                     originStockItems.map((it) => (
                       <option key={it.material.id} value={it.material.id}>
-                        {it.material.materialCode} - {it.material.materialName} (Tersedia: {it.availableStock} {it.material.unit})
+                        {it.material.materialCode} - {it.material.materialName} (Bebas: {it.availableStock}/{it.physicalStock} {it.material.unit})
                       </option>
                     ))
                   )}
@@ -614,11 +637,17 @@ export const TransferStok: React.FC = () => {
                     </div>
                   </div>
                   <div className="flex items-center justify-between pt-1 border-t border-slate-200/60">
-                    <div className="text-slate-600 font-semibold">Stok Tersedia di Gudang Asal:</div>
-                    <div className="text-base font-extrabold font-mono text-emerald-800">
+                    <div className="text-slate-600 font-semibold">Stok Bebas Reservasi di Gudang Asal:</div>
+                    <div className={`text-base font-extrabold font-mono ${availableOriginStock <= 0 ? 'text-rose-700' : 'text-emerald-800'}`}>
                       {availableOriginStock} {currentUnit}
                     </div>
                   </div>
+                  {reservedOriginStock > 0 && (
+                    <div className="flex items-center justify-between text-[11px] text-amber-800 bg-amber-50 px-2 py-1 rounded border border-amber-200">
+                      <span>Fisik: {physicalOriginStock} {currentUnit}</span>
+                      <span>Direservasi Pending GI: -{reservedOriginStock} {currentUnit}</span>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs">

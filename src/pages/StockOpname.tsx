@@ -15,6 +15,7 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
+import { getCanonicalBalanceId } from '../services/inventoryEngine';
 
 export const StockOpname: React.FC = () => {
   const {
@@ -67,13 +68,22 @@ export const StockOpname: React.FC = () => {
     return activeMaterials.find((m) => m.id === selectedMaterialId) || activeMaterials[0] || null;
   }, [activeMaterials, selectedMaterialId]);
 
-  // Retrieve actual stock balance from Inventory for matching material & location
+  // Retrieve actual stock balance from Inventory with canonical ID preference & materialCode fallback
   const currentInventory = useMemo(() => {
     if (!selectedMaterial || !selectedLocation) return undefined;
-    return inventory.find(
+    const canonicalId = getCanonicalBalanceId(selectedMaterial.id, selectedLocation.id);
+    const matches = inventory.filter(
       (inv) =>
-        (inv.materialId === selectedMaterial.id || inv.itemId === selectedMaterial.id) &&
-        inv.locationId === selectedLocation.id
+        inv.locationId === selectedLocation.id &&
+        (inv.materialId === selectedMaterial.id ||
+          inv.itemId === selectedMaterial.id ||
+          (selectedMaterial.materialCode &&
+            (inv.materialCode === selectedMaterial.materialCode ||
+              inv.itemCode === selectedMaterial.materialCode)))
+    );
+    return (
+      matches.find((m) => m.id === canonicalId) ||
+      [...matches].sort((a, b) => (Number(b.version) || 0) - (Number(a.version) || 0))[0]
     );
   }, [inventory, selectedMaterial, selectedLocation]);
 
@@ -309,10 +319,18 @@ export const StockOpname: React.FC = () => {
                   return (
                     <tr key={so.id} className="hover:bg-slate-50/70 transition">
                       <td className="py-3.5 px-4 font-mono font-bold text-slate-800">
-                        {so.opnameNumber}
+                        <div>{so.opnameNumber}</div>
+                        {so.isBaselineAnchor && (
+                          <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-blue-100 text-blue-800 border border-blue-200 font-sans">
+                            BASELINE RESMI
+                          </span>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 font-mono text-slate-600">
-                        {so.opnameDate}
+                        <div>{so.opnameDate}</div>
+                        {so.countCompletedAt && (
+                          <div className="text-[10px] text-slate-400">Cutoff: {so.countCompletedAt}</div>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 font-medium text-slate-700">
                         {so.locationName}

@@ -39,6 +39,7 @@ import {
   MasterSupplier,
 } from '../types';
 import { downloadModuleTemplate, exportToExcelFile, exportToCsvFile } from '../utils/excelUtils';
+import { getJakartaDateString } from '../services/inventoryEngine';
 
 type MasterTab = 'MATERIALS' | 'LOCATIONS' | 'CATEGORIES' | 'UNITS' | 'REQUESTING_UNITS' | 'SUPPLIERS';
 
@@ -616,7 +617,7 @@ export const MasterData: React.FC = () => {
       'Unit Cost': m.unitCost || 0,
       'Status': m.isActive ? 'Active' : 'Inactive',
     }));
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = getJakartaDateString();
     if (format === 'xlsx') {
       exportToExcelFile(data, `Material_Master_${dateStr}.xlsx`, 'Materials');
     } else {
@@ -635,7 +636,7 @@ export const MasterData: React.FC = () => {
       'Capacity (m2)': l.capacityM2 || 0,
       'Status': l.isActive ? 'Active' : 'Inactive',
     }));
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = getJakartaDateString();
     if (format === 'xlsx') {
       exportToExcelFile(data, `Location_Master_${dateStr}.xlsx`, 'Locations');
     } else {
@@ -875,7 +876,7 @@ export const MasterData: React.FC = () => {
       'Dibuat Oleh': u.createdBy || '-',
       'Terakhir Diperbarui': u.updatedAt || '-',
     }));
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = getJakartaDateString();
     if (format === 'xlsx') {
       exportToExcelFile(data, `Master_Unit_Pemohon_${dateStr}.xlsx`, 'Unit Pemohon');
     } else {

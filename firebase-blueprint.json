@@ -202,6 +202,57 @@
         "details": { "type": "string" }
       },
       "required": ["timestamp", "action", "module", "details"]
+    },
+    "InventoryMovement": {
+      "title": "InventoryMovement",
+      "description": "Authoritative immutable inventory movement ledger record",
+      "type": "object",
+      "properties": {
+        "movementId": { "type": "string" },
+        "materialId": { "type": "string" },
+        "materialCode": { "type": "string" },
+        "materialName": { "type": "string" },
+        "locationId": { "type": "string" },
+        "locationName": { "type": "string" },
+        "unit": { "type": "string" },
+        "movementType": { "type": "string" },
+        "quantity": { "type": "number" },
+        "delta": { "type": "number" },
+        "balanceBefore": { "type": "number" },
+        "balanceAfter": { "type": "number" },
+        "sourceDocumentId": { "type": "string" },
+        "sourceDocumentType": { "type": "string" },
+        "status": { "type": "string", "enum": ["POSTED", "REVERSED"] },
+        "idempotencyKey": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "createdTimestampMs": { "type": "number" },
+        "postingSequence": { "type": "number" }
+      },
+      "required": ["movementId", "materialId", "locationId", "delta", "quantity", "balanceBefore", "balanceAfter", "idempotencyKey"]
+    },
+    "InventoryBaseline": {
+      "title": "InventoryBaseline",
+      "description": "Official physical stock opname opening baseline record",
+      "type": "object",
+      "properties": {
+        "baselineId": { "type": "string" },
+        "materialId": { "type": "string" },
+        "materialCode": { "type": "string" },
+        "materialName": { "type": "string" },
+        "locationId": { "type": "string" },
+        "locationName": { "type": "string" },
+        "baselineQuantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "stockOpnameId": { "type": "string" },
+        "stockOpnameNumber": { "type": "string" },
+        "sourceMovementId": { "type": "string" },
+        "countCompletedAt": { "type": "string" },
+        "approvedAt": { "type": "string" },
+        "approvedBy": { "type": "string" },
+        "baselineVersion": { "type": "number" },
+        "status": { "type": "string", "enum": ["ACTIVE", "SUPERSEDED"] }
+      },
+      "required": ["baselineId", "materialId", "locationId", "baselineQuantity", "stockOpnameId", "countCompletedAt", "approvedAt", "approvedBy", "baselineVersion", "status"]
     }
   },
   "firestore": {
@@ -236,6 +287,14 @@
     "/inventory/{inventoryId}": {
       "schema": { "$ref": "#/entities/InventoryItem" },
       "description": "Stock balances per location"
+    },
+    "/inventoryBaselines/{baselineId}": {
+      "schema": { "$ref": "#/entities/InventoryBaseline" },
+      "description": "Official physical stock opname opening baseline records"
+    },
+    "/inventoryMovements/{movementId}": {
+      "schema": { "$ref": "#/entities/InventoryMovement" },
+      "description": "Immutable inventory movement ledger entries"
     },
     "/goodsReceipts/{receiptId}": {
       "schema": { "$ref": "#/entities/GoodsReceipt" },

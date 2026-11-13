@@ -16,7 +16,18 @@ import {
   MapPin,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
-import { InventoryBalance, GoodsReceipt, GoodsIssue, StockTransfer } from '../types';
+import {
+  InventoryBalance,
+  GoodsReceipt,
+  GoodsIssue,
+  StockTransfer,
+  BaselineStatus,
+  IN_TRANSIT_LOCATION_ID,
+} from '../types';
+import {
+  buildInventoryReconciliationMap,
+  getJakartaDateString,
+} from '../services/inventoryEngine';
 
 type ReportType =
   | 'CURRENT_INVENTORY'
@@ -37,6 +48,8 @@ export const Laporan: React.FC = () => {
     goodsIssues,
     stockTransfers,
     stockOpnames,
+    inventoryBaselines,
+    inventoryMovements,
     locations,
     categories,
     currentUser,
@@ -44,8 +57,9 @@ export const Laporan: React.FC = () => {
 
   const [selectedReport, setSelectedReport] = useState<ReportType>('CURRENT_INVENTORY');
   const [selectedLocation, setSelectedLocation] = useState('ALL');
+  const [selectedBaselineStatus, setSelectedBaselineStatus] = useState<'ALL' | BaselineStatus>('ALL');
   const [startDate, setStartDate] = useState('2026-10-01');
-  const [endDate, setEndDate] = useState('2026-10-21');
+  const [endDate, setEndDate] = useState('2026-11-30');
 
   const reportOptions = [
     { id: 'CURRENT_INVENTORY', name: '1. Posisi Persediaan Terkini (Current Inventory)', icon: Boxes },
@@ -75,10 +89,46 @@ export const Laporan: React.FC = () => {
     return (!startDate || d >= startDate) && (!endDate || d <= endDate);
   };
 
+  const itemSummaryMap = useMemo(() => {
+    return buildInventoryReconciliationMap({
+      inventory: items,
+      inventoryBaselines,
+      inventoryMovements,
+      stockOpnames,
+    });
+  }, [items, inventoryBaselines, inventoryMovements, stockOpnames]);
+
   const filteredItems: InventoryBalance[] = useMemo(
-    () => items.filter((i: InventoryBalance) => filterLoc(i.locationId, i.locationName)),
-    [items, selectedLocation]
+    () =>
+      items.filter((i: InventoryBalance) => {
+        if (i.locationId === IN_TRANSIT_LOCATION_ID || i.locationId === 'loc-in-transit') return false;
+        if (!filterLoc(i.locationId, i.locationName)) return false;
+        if (selectedBaselineStatus !== 'ALL') {
+          const sum = itemSummaryMap.get(i.id);
+          if (sum?.baselineStatus !== selectedBaselineStatus) return false;
+        }
+        return true;
+      }),
+    [items, selectedLocation, selectedBaselineStatus, itemSummaryMap]
   );
+
+  // Per-unit totals so incompatible UoMs (e.g. Pcs vs Box vs Pack) are NEVER summed together
+  const unitTotals = useMemo(() => {
+    const totals: Record<string, { opening: number; qtyIn: number; qtyOut: number; closing: number; count: number }> = {};
+    for (const item of filteredItems) {
+      const u = item.unit || 'Unit';
+      const sum = itemSummaryMap.get(item.id);
+      if (!totals[u]) {
+        totals[u] = { opening: 0, qtyIn: 0, qtyOut: 0, closing: 0, count: 0 };
+      }
+      totals[u].opening += sum?.baseline ? sum.baselineQuantity : 0;
+      totals[u].qtyIn += sum ? sum.qtyIn : 0;
+      totals[u].qtyOut += sum ? sum.qtyOut : 0;
+      totals[u].closing += Number(item.availableStock) || 0;
+      totals[u].count += 1;
+    }
+    return totals;
+  }, [filteredItems, itemSummaryMap]);
 
   const filteredReceipts: GoodsReceipt[] = useMemo(
     () => goodsReceipts.filter((r: GoodsReceipt) => filterLoc(r.destinationLocationId, r.destinationLocationName) && filterDate(r.receiptDate || r.createdAt)),
@@ -95,24 +145,63 @@ export const Laporan: React.FC = () => {
     [stockTransfers, selectedLocation, startDate, endDate]
   );
 
+  const filteredOpnames = useMemo(
+    () =>
+      stockOpnames.filter(
+        (so) =>
+          filterLoc(so.locationId, so.locationName) &&
+          filterDate(so.opnameDate || so.createdAt)
+      ),
+    [stockOpnames, selectedLocation, startDate, endDate]
+  );
+
+  const filteredMovements = useMemo(
+    () =>
+      (inventoryMovements || []).filter(
+        (m) => filterLoc(m.locationId, m.locationName) && filterDate(m.createdAt)
+      ),
+    [inventoryMovements, selectedLocation, startDate, endDate]
+  );
+
   const handleExportCSV = () => {
     let headers: string[] = [];
     let rows: (string | number)[][] = [];
-    let filename = `PT_IAS_${selectedReport}_${new Date().toISOString().slice(0, 10)}.csv`;
+    const filename = `PT_IAS_${selectedReport}_${getJakartaDateString()}.csv`;
 
     if (selectedReport === 'CURRENT_INVENTORY') {
-      headers = ['Kode Item', 'Nama Item', 'Kategori', 'Satuan', 'Gudang', 'Stok Tersedia', 'Stok Min', 'ROP', 'Nilai Estimasi'];
-      rows = filteredItems.map((i) => [
-        `"${i.itemCode}"`,
-        `"${i.itemName}"`,
-        `"${i.categoryName}"`,
-        `"${i.unit}"`,
-        `"${i.locationName}"`,
-        i.availableStock,
-        i.minimumStock,
-        i.reorderPoint,
-        (i.unitCost || 0) * i.availableStock,
-      ]);
+      headers = [
+        'Kode Item',
+        'Nama Item',
+        'Kategori',
+        'Gudang',
+        'Physical Opening (Baseline)',
+        'Qty IN (Post-Cutoff)',
+        'Qty OUT (Post-Cutoff)',
+        'Adjustment',
+        'Closing Balance (Authoritative)',
+        'Satuan',
+        'Baseline Status',
+        'Opname Referensi',
+        'Selisih Rekonsiliasi',
+      ];
+      rows = filteredItems.map((i) => {
+        const sum = itemSummaryMap.get(i.id);
+        return [
+          `"${i.materialCode || i.itemCode}"`,
+          `"${i.materialName || i.itemName}"`,
+          `"${i.categoryName}"`,
+          `"${i.locationName}"`,
+          sum?.baseline ? sum.baselineQuantity : 'Unverified',
+          sum ? sum.qtyIn : 0,
+          sum ? sum.qtyOut : 0,
+          sum ? sum.adjustments : 0,
+          i.availableStock,
+          `"${i.unit}"`,
+          `"${sum ? sum.baselineStatus : 'UNVERIFIED'}"`,
+          `"${sum?.baseline?.stockOpnameNumber || '-'}"`,
+          sum ? sum.reconciliationDifference : 0,
+        ];
+      });
     } else if (selectedReport === 'GOODS_RECEIPTS') {
       headers = ['No Penerimaan', 'Tanggal', 'Pemasok', 'Dokumen Ref', 'Nama Item', 'Qty', 'Satuan', 'Lokasi', 'Petugas'];
       rows = filteredReceipts.map((r) => [
@@ -225,7 +314,7 @@ export const Laporan: React.FC = () => {
           </select>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-100 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-100 text-xs">
           <div>
             <label className="text-slate-500 block mb-1 font-medium">Filter Lokasi Gudang</label>
             <select
@@ -234,11 +323,28 @@ export const Laporan: React.FC = () => {
               className="w-full px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
             >
               <option value="ALL">Semua Hub / Gudang</option>
-              {locations.map((l) => (
-                <option key={l.id} value={l.name}>
-                  {l.name}
-                </option>
-              ))}
+              {locations
+                .filter((l) => l.id !== IN_TRANSIT_LOCATION_ID && l.id !== 'loc-in-transit')
+                .map((l) => (
+                  <option key={l.id} value={l.name}>
+                    {l.name}
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-slate-500 block mb-1 font-medium">Status Baseline Fisik</label>
+            <select
+              value={selectedBaselineStatus}
+              onChange={(e) => setSelectedBaselineStatus(e.target.value as 'ALL' | BaselineStatus)}
+              className="w-full px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#064e3b] bg-white"
+            >
+              <option value="ALL">Semua Status Baseline</option>
+              <option value="VERIFIED">VERIFIED (Baseline Resmi)</option>
+              <option value="UNVERIFIED">UNVERIFIED (Belum Opname)</option>
+              <option value="REVIEW_REQUIRED">REVIEW REQUIRED (Perlu Tinjauan)</option>
+              <option value="RECONCILIATION_EXCEPTION">RECONCILIATION EXCEPTION (Defisit / Mismatch)</option>
             </select>
           </div>
 
@@ -284,7 +390,7 @@ export const Laporan: React.FC = () => {
               {reportOptions.find((r) => r.id === selectedReport)?.name}
             </div>
             <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-              Dicetak: {new Date().toISOString().slice(0, 10)} WIB oleh {currentUser?.fullName}
+              Dicetak: {getJakartaDateString()} WIB oleh {currentUser?.fullName}
             </div>
             <div className="text-[10px] text-slate-400">
               Lokasi: {selectedLocation} | Periode: {startDate} s/d {endDate}
@@ -294,47 +400,103 @@ export const Laporan: React.FC = () => {
 
         {/* Report Content Dynamic Table based on report selection */}
         {selectedReport === 'CURRENT_INVENTORY' && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="bg-slate-100/80 border-b border-slate-300 text-slate-700 font-bold uppercase text-[10px]">
-                  <th className="py-2.5 px-3">Kode SKU</th>
-                  <th className="py-2.5 px-3">Nama Barang</th>
-                  <th className="py-2.5 px-3">Kategori</th>
-                  <th className="py-2.5 px-3">Satuan</th>
-                  <th className="py-2.5 px-3">Lokasi</th>
-                  <th className="py-2.5 px-3 text-right">Stok Fisik</th>
-                  <th className="py-2.5 px-3 text-center">Batas Min</th>
-                  <th className="py-2.5 px-3 text-right">Nilai Total Estimasi</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {filteredItems.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="py-10 text-center text-slate-400">
-                      Belum ada data saldo stok inventaris yang terdaftar sesuai filter.
-                    </td>
+          <div className="space-y-4">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-100/80 border-b border-slate-300 text-slate-700 font-bold uppercase text-[10px]">
+                    <th className="py-2.5 px-3">Kode SKU</th>
+                    <th className="py-2.5 px-3">Nama Barang</th>
+                    <th className="py-2.5 px-3">Gudang</th>
+                    <th className="py-2.5 px-3 text-right">Physical Opening</th>
+                    <th className="py-2.5 px-3 text-right">Qty IN</th>
+                    <th className="py-2.5 px-3 text-right">Qty OUT</th>
+                    <th className="py-2.5 px-3 text-right">Adjustment</th>
+                    <th className="py-2.5 px-3 text-right">Closing Balance</th>
+                    <th className="py-2.5 px-3">Satuan</th>
+                    <th className="py-2.5 px-3 text-center">Baseline Status</th>
                   </tr>
-                ) : (
-                  filteredItems.map((it) => (
-                    <tr key={it.id} className="hover:bg-slate-50">
-                      <td className="py-2 px-3 font-mono font-bold text-slate-800">{it.itemCode}</td>
-                      <td className="py-2 px-3 font-medium text-slate-900">{it.itemName}</td>
-                      <td className="py-2 px-3 text-slate-600">{it.categoryName}</td>
-                      <td className="py-2 px-3 text-slate-600">{it.unit}</td>
-                      <td className="py-2 px-3 text-slate-700">{it.locationName}</td>
-                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">
-                        {it.availableStock}
-                      </td>
-                      <td className="py-2 px-3 text-center font-mono text-slate-600">{it.minimumStock}</td>
-                      <td className="py-2 px-3 text-right font-mono text-emerald-800">
-                        Rp {((it.unitCost || 0) * it.availableStock).toLocaleString('id-ID')}
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {filteredItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="py-10 text-center text-slate-400">
+                        Belum ada data saldo stok inventaris yang terdaftar sesuai filter.
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    filteredItems.map((it) => {
+                      const sum = itemSummaryMap.get(it.id);
+                      const status = sum?.baselineStatus || 'UNVERIFIED';
+                      return (
+                        <tr key={it.id} className="hover:bg-slate-50">
+                          <td className="py-2 px-3 font-mono font-bold text-slate-800">{it.materialCode || it.itemCode}</td>
+                          <td className="py-2 px-3 font-medium text-slate-900">{it.materialName || it.itemName}</td>
+                          <td className="py-2 px-3 text-slate-700">{it.locationName}</td>
+                          <td className="py-2 px-3 text-right font-mono font-bold text-slate-800">
+                            {sum?.baseline ? (
+                              <span>{sum.baselineQuantity}</span>
+                            ) : (
+                              <span className="text-slate-400 italic font-sans text-[10px]">Unverified</span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono text-emerald-700">+{sum?.qtyIn || 0}</td>
+                          <td className="py-2 px-3 text-right font-mono text-indigo-700">-{sum?.qtyOut || 0}</td>
+                          <td className="py-2 px-3 text-right font-mono text-amber-700">
+                            {(sum?.adjustments || 0) >= 0 ? `+${sum?.adjustments || 0}` : sum?.adjustments}
+                          </td>
+                          <td className={`py-2 px-3 text-right font-mono font-extrabold ${it.availableStock < 0 ? 'text-rose-700 bg-rose-50' : 'text-slate-900'}`}>
+                            {it.availableStock}
+                          </td>
+                          <td className="py-2 px-3 text-slate-600">{it.unit}</td>
+                          <td className="py-2 px-3 text-center">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                                status === 'VERIFIED'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : status === 'RECONCILIATION_EXCEPTION'
+                                  ? 'bg-rose-100 text-rose-800'
+                                  : status === 'REVIEW_REQUIRED'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              {status.replace(/_/g, ' ')}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Per-Unit Reconciled Subtotals (Never mixing incompatible units of measure) */}
+            {Object.keys(unitTotals).length > 0 && (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">
+                  Rekapitulasi Saldo per Satuan (Tanpa Pencampuran Unit Berbeda)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  {Object.entries(unitTotals).map(([unit, stats]) => (
+                    <div key={unit} className="bg-white border border-slate-200 rounded-lg p-2.5 font-mono">
+                      <div className="font-sans font-bold text-slate-800 text-[11px] mb-1">
+                        Satuan: {unit} ({stats.count} baris)
+                      </div>
+                      <div className="flex justify-between text-[11px] text-slate-600">
+                        <span>Opening Terverifikasi:</span>
+                        <span className="font-bold">{stats.opening.toLocaleString()} {unit}</span>
+                      </div>
+                      <div className="flex justify-between text-[11px] text-slate-900 font-bold">
+                        <span>Total Closing Balance:</span>
+                        <span>{stats.closing.toLocaleString()} {unit}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -442,14 +604,14 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {items.filter((it) => it.availableStock <= it.reorderPoint).length === 0 ? (
+                {filteredItems.filter((it) => it.availableStock <= it.reorderPoint).length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-10 text-center text-slate-400">
                       Tidak ada material yang mencapai batas kritis atau titik pemesanan ulang (ROP).
                     </td>
                   </tr>
                 ) : (
-                  items
+                  filteredItems
                     .filter((it) => it.availableStock <= it.reorderPoint)
                     .map((it) => {
                       const isCritical = it.availableStock <= it.minimumStock;
@@ -484,8 +646,81 @@ export const Laporan: React.FC = () => {
           </div>
         )}
 
-        {/* Generic Table Fallback for other reports */}
-        {!['CURRENT_INVENTORY', 'GOODS_RECEIPTS', 'GOODS_ISSUES', 'CRITICAL_STOCK'].includes(selectedReport) && (
+        {(selectedReport === 'STOCK_OPNAME' || selectedReport === 'STOCK_DISCREPANCIES') && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-100/80 border-b border-slate-300 text-slate-700 font-bold uppercase text-[10px]">
+                  <th className="py-2.5 px-3">No Opname</th>
+                  <th className="py-2.5 px-3">Tanggal</th>
+                  <th className="py-2.5 px-3">Lokasi</th>
+                  <th className="py-2.5 px-3">Material</th>
+                  <th className="py-2.5 px-3 text-right">Sistem</th>
+                  <th className="py-2.5 px-3 text-right">Fisik</th>
+                  <th className="py-2.5 px-3 text-right">Selisih</th>
+                  <th className="py-2.5 px-3 text-center">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {(selectedReport === 'STOCK_DISCREPANCIES'
+                  ? filteredOpnames.filter((o) => o.variance !== 0)
+                  : filteredOpnames
+                ).map((so) => (
+                  <tr key={so.id} className="hover:bg-slate-50">
+                    <td className="py-2 px-3 font-mono font-bold text-slate-900">
+                      {so.opnameNumber} {so.isBaselineAnchor ? '(BASELINE)' : ''}
+                    </td>
+                    <td className="py-2 px-3 font-mono text-slate-600">{so.opnameDate}</td>
+                    <td className="py-2 px-3 text-slate-700">{so.locationName}</td>
+                    <td className="py-2 px-3 text-slate-900">[{so.itemCode}] {so.itemName}</td>
+                    <td className="py-2 px-3 text-right font-mono">{so.systemQuantity} {so.unit}</td>
+                    <td className="py-2 px-3 text-right font-mono font-bold">{so.physicalQuantity} {so.unit}</td>
+                    <td className={`py-2 px-3 text-right font-mono font-bold ${so.variance < 0 ? 'text-rose-700' : 'text-blue-700'}`}>
+                      {so.variance > 0 ? `+${so.variance}` : so.variance}
+                    </td>
+                    <td className="py-2 px-3 text-center font-bold text-[10px]">{so.verificationStatus}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {selectedReport === 'INVENTORY_MOVEMENTS' && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-100/80 border-b border-slate-300 text-slate-700 font-bold uppercase text-[10px]">
+                  <th className="py-2.5 px-3">Waktu</th>
+                  <th className="py-2.5 px-3">Tipe Mutasi</th>
+                  <th className="py-2.5 px-3">Material</th>
+                  <th className="py-2.5 px-3">Lokasi</th>
+                  <th className="py-2.5 px-3 text-right">Delta</th>
+                  <th className="py-2.5 px-3 text-right">Saldo Akhir</th>
+                  <th className="py-2.5 px-3">Dokumen Sumber</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {filteredMovements.map((m) => (
+                  <tr key={m.id} className="hover:bg-slate-50">
+                    <td className="py-2 px-3 font-mono text-slate-600">{m.createdAt}</td>
+                    <td className="py-2 px-3 font-mono font-bold text-slate-800">{m.movementType}</td>
+                    <td className="py-2 px-3 text-slate-900">[{m.materialCode}] {m.materialName}</td>
+                    <td className="py-2 px-3 text-slate-700">{m.locationName}</td>
+                    <td className={`py-2 px-3 text-right font-mono font-bold ${m.delta >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {m.delta >= 0 ? `+${m.delta}` : m.delta} {m.unit}
+                    </td>
+                    <td className="py-2 px-3 text-right font-mono font-bold">{m.balanceAfter}</td>
+                    <td className="py-2 px-3 font-mono text-slate-500">{m.sourceDocumentId}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Generic Table Fallback for remaining transfer/trend reports */}
+        {!['CURRENT_INVENTORY', 'GOODS_RECEIPTS', 'GOODS_ISSUES', 'CRITICAL_STOCK', 'STOCK_OPNAME', 'STOCK_DISCREPANCIES', 'INVENTORY_MOVEMENTS'].includes(selectedReport) && (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
@@ -499,14 +734,14 @@ export const Laporan: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {stockTransfers.length === 0 ? (
+                {filteredTransfers.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-10 text-center text-slate-400">
                       Belum ada pergerakan transfer stok antar gudang.
                     </td>
                   </tr>
                 ) : (
-                  stockTransfers.map((st) => (
+                  filteredTransfers.map((st) => (
                     <tr key={st.id} className="hover:bg-slate-50">
                       <td className="py-2 px-3 font-mono font-bold text-blue-900">{st.transferNumber}</td>
                       <td className="py-2 px-3 text-slate-800">Transfer: {st.itemName} ({st.originLocationName} → {st.destinationLocationName})</td>

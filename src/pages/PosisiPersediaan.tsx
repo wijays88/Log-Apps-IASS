@@ -23,10 +23,25 @@ import {
   Check,
   FileSpreadsheet,
   FileText,
+  HelpCircle,
+  ShieldCheck,
+  Sparkles,
+  ExternalLink,
+  Trash2,
+  Loader2,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
-import { InventoryBalance } from '../types';
+import { InventoryBalance, BaselineStatus, IN_TRANSIT_LOCATION_ID } from '../types';
 import { exportToExcelFile, exportToCsvFile } from '../utils/excelUtils';
+import {
+  BaselineLedgerSummary,
+  runBaselineMigrationDryRun,
+  buildInventoryReconciliationMap,
+  getJakartaDateString,
+  normalizeSupplyRequestStatus,
+  getPendingGoodsIssueReservedQty,
+  calculateUnreservedAvailableStock,
+} from '../services/inventoryEngine';
 
 type PosisiSubTab =
   | 'ALL_INVENTORY'
@@ -40,6 +55,10 @@ type PosisiSubTab =
 export const PosisiPersediaan: React.FC = () => {
   const {
     inventory,
+    inventoryBaselines,
+    inventoryMovements,
+    stockOpnames,
+    goodsIssues,
     activeMaterials,
     activeLocations,
     categories,
@@ -48,8 +67,10 @@ export const PosisiPersediaan: React.FC = () => {
     supplyRequests,
     recordConsumption,
     saveMorganTrolley,
+    deleteMorganTrolley,
     createSupplyRequest,
     receiveSupplyRequest,
+    reconcileOpnameBaselines,
     currentUser,
     can,
     showToast,
@@ -60,19 +81,25 @@ export const PosisiPersediaan: React.FC = () => {
   const [selectedLocation, setSelectedLocation] = useState('ALL');
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [selectedStatus, setSelectedStatus] = useState<'ALL' | 'NORMAL' | 'MENIPIS' | 'KRITIS'>('ALL');
+  const [selectedBaselineStatus, setSelectedBaselineStatus] = useState<'ALL' | BaselineStatus>('ALL');
 
   // Modals state
   const [detailItem, setDetailItem] = useState<InventoryBalance | null>(null);
+  const [traceModalSummary, setTraceModalSummary] = useState<BaselineLedgerSummary | null>(null);
+  const [migrationDryRunModalOpen, setMigrationDryRunModalOpen] = useState(false);
+  const [confirmReconcileOpen, setConfirmReconcileOpen] = useState(false);
+  const [isApplyingReconciliation, setIsApplyingReconciliation] = useState(false);
 
   // New Consumption modal
   const [consumptionModalOpen, setConsumptionModalOpen] = useState(false);
-  const [consDate, setConsDate] = useState(new Date().toISOString().slice(0, 10));
+  const [consDate, setConsDate] = useState(() => getJakartaDateString());
   const [consLocId, setConsLocId] = useState(activeLocations[0]?.id || '');
   const [consArea, setConsArea] = useState('Area Toilet Kedatangan Gate 1B');
   const [consShift, setConsShift] = useState<'Shift 1' | 'Shift 2' | 'Shift 3'>('Shift 1');
   const [consMatId, setConsMatId] = useState(activeMaterials[0]?.id || '');
   const [consQty, setConsQty] = useState(10);
   const [consNotes, setConsNotes] = useState('');
+  const [isSubmittingCons, setIsSubmittingCons] = useState(false);
 
   // New Trolley modal
   const [trolleyModalOpen, setTrolleyModalOpen] = useState(false);
@@ -83,6 +110,9 @@ export const PosisiPersediaan: React.FC = () => {
   const [trolleyCondition, setTrolleyCondition] = useState<'Baik (Good)' | 'Perbaikan Ringan (Minor)' | 'Rusak Berat (Damaged)'>('Baik (Good)');
   const [trolleyPic, setTrolleyPic] = useState(currentUser?.fullName || '');
   const [trolleyNotes, setTrolleyNotes] = useState('');
+  const [isSubmittingTrolley, setIsSubmittingTrolley] = useState(false);
+  const [confirmDeleteTrolleyId, setConfirmDeleteTrolleyId] = useState<string | null>(null);
+  const [isDeletingTrolley, setIsDeletingTrolley] = useState(false);
 
   // New Request modal
   const [requestModalOpen, setRequestModalOpen] = useState(false);
@@ -91,21 +121,85 @@ export const PosisiPersediaan: React.FC = () => {
   const [reqMatId, setReqMatId] = useState(activeMaterials[0]?.id || '');
   const [reqQty, setReqQty] = useState(50);
   const [reqNotes, setReqNotes] = useState('');
+  const [isSubmittingReq, setIsSubmittingReq] = useState(false);
 
   // Partial Receive modal
   const [receiveTargetId, setReceiveTargetId] = useState<string | null>(null);
   const [receiveQtyInput, setReceiveQtyInput] = useState(10);
   const [receiveRefDoc, setReceiveRefDoc] = useState('');
+  const [isSubmittingReceive, setIsSubmittingReceive] = useState(false);
 
   const canMutate = can('CREATE_TRANSACTION').allowed;
+  const isAdmin = currentUser?.role === 'ADMIN';
+
+  // Authoritative physical stock & reservation preview for Consumption modal
+  const selectedConsStockInfo = useMemo(() => {
+    const resolvedLocId = consLocId || activeLocations[0]?.id || '';
+    const resolvedMat = activeMaterials.find((m) => m.id === consMatId) || activeMaterials[0];
+    if (!resolvedLocId || !resolvedMat) {
+      return { physical: 0, reserved: 0, unreserved: 0, unit: '' };
+    }
+    const bal = inventory.find(
+      (b) =>
+        b.locationId === resolvedLocId &&
+        (b.materialId === resolvedMat.id ||
+          b.itemId === resolvedMat.id ||
+          (resolvedMat.materialCode && b.materialCode === resolvedMat.materialCode))
+    );
+    const physical = bal ? Number(bal.availableStock) || 0 : 0;
+    const reserved = getPendingGoodsIssueReservedQty(
+      goodsIssues,
+      resolvedMat.id,
+      resolvedLocId,
+      resolvedMat.materialCode
+    );
+    return {
+      physical,
+      reserved,
+      unreserved: calculateUnreservedAvailableStock(physical, reserved),
+      unit: resolvedMat.unit || '',
+    };
+  }, [consLocId, consMatId, activeLocations, activeMaterials, inventory, goodsIssues]);
+
+  const activeReceiveTarget = useMemo(
+    () => supplyRequests.find((r) => r.id === receiveTargetId) || null,
+    [supplyRequests, receiveTargetId]
+  );
+
+  // Authoritative physical baseline summary map for every SKU + warehouse location (shared helper)
+  const itemSummaryMap = useMemo(() => {
+    return buildInventoryReconciliationMap({
+      inventory,
+      inventoryBaselines,
+      inventoryMovements,
+      stockOpnames,
+    });
+  }, [inventory, inventoryBaselines, inventoryMovements, stockOpnames]);
+
+  const dryRunReport = useMemo(() => {
+    return runBaselineMigrationDryRun({
+      inventory,
+      stockOpnames,
+      inventoryMovements,
+      existingBaselines: inventoryBaselines,
+    });
+  }, [inventory, stockOpnames, inventoryMovements, inventoryBaselines]);
 
   // Filtered Main Inventory
   const filteredInventory = useMemo(() => {
     return inventory.filter((item) => {
+      // Exclude virtual in-transit buffer from normal warehouse physical baseline reporting
+      if (item.locationId === IN_TRANSIT_LOCATION_ID || item.locationId === 'loc-in-transit') {
+        return false;
+      }
+
+      const nameStr = (item.materialName || item.itemName || '').toLowerCase();
+      const codeStr = (item.materialCode || item.itemCode || '').toLowerCase();
+      const locStr = (item.locationName || '').toLowerCase();
       const matchSearch =
-        item.materialName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.materialCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.locationName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        nameStr.includes(searchTerm.toLowerCase()) ||
+        codeStr.includes(searchTerm.toLowerCase()) ||
+        locStr.includes(searchTerm.toLowerCase()) ||
         (item.variantValue || '').toLowerCase().includes(searchTerm.toLowerCase());
 
       const matchLoc = selectedLocation === 'ALL' || item.locationId === selectedLocation;
@@ -120,13 +214,20 @@ export const PosisiPersediaan: React.FC = () => {
       else if (selectedStatus === 'MENIPIS') matchStatus = isLow;
       else if (selectedStatus === 'NORMAL') matchStatus = isNormal;
 
-      return matchSearch && matchLoc && matchCat && matchStatus;
+      const summary = itemSummaryMap.get(item.id);
+      const matchBaseline =
+        selectedBaselineStatus === 'ALL' || summary?.baselineStatus === selectedBaselineStatus;
+
+      return matchSearch && matchLoc && matchCat && matchStatus && matchBaseline;
     });
-  }, [inventory, searchTerm, selectedLocation, selectedCategory, selectedStatus]);
+  }, [inventory, itemSummaryMap, searchTerm, selectedLocation, selectedCategory, selectedStatus, selectedBaselineStatus]);
 
   // Toilet & Building filtered items
   const toiletBuildingItems = useMemo(() => {
     return inventory.filter((item) => {
+      if (item.locationId === IN_TRANSIT_LOCATION_ID || item.locationId === 'loc-in-transit') {
+        return false;
+      }
       const catCode = item.categoryId.toLowerCase();
       const isToiletCat =
         catCode.includes('tissue') ||
@@ -139,114 +240,223 @@ export const PosisiPersediaan: React.FC = () => {
     });
   }, [inventory]);
 
-  // Polybag specific items
+  // Polybag specific items (exclude loc-in-transit)
   const polybagItems = useMemo(() => {
-    return inventory.filter((item) => item.categoryId.toLowerCase().includes('plastic') || item.materialName.toLowerCase().includes('polybag'));
+    return inventory.filter(
+      (item) =>
+        item.locationId !== IN_TRANSIT_LOCATION_ID &&
+        item.locationId !== 'loc-in-transit' &&
+        ((item.categoryId || '').toLowerCase().includes('plastic') ||
+          (item.materialName || item.itemName || '').toLowerCase().includes('polybag'))
+    );
   }, [inventory]);
 
-  // Uniform specific items
+  // Uniform specific items (exclude loc-in-transit)
   const uniformItems = useMemo(() => {
-    return inventory.filter((item) => item.categoryId.toLowerCase().includes('uniform') || item.materialName.toLowerCase().includes('uniform') || item.materialName.toLowerCase().includes('seragam'));
+    return inventory.filter(
+      (item) =>
+        item.locationId !== IN_TRANSIT_LOCATION_ID &&
+        item.locationId !== 'loc-in-transit' &&
+        ((item.categoryId || '').toLowerCase().includes('uniform') ||
+          (item.materialName || item.itemName || '').toLowerCase().includes('uniform') ||
+          (item.materialName || item.itemName || '').toLowerCase().includes('seragam'))
+    );
   }, [inventory]);
 
   // Export handlers
   const handleExportExcel = () => {
-    const data = filteredInventory.map((item) => ({
-      'Material Code': item.materialCode,
-      'Material Name': item.materialName,
-      'Kategori': item.categoryName,
-      'Lokasi Gudang': item.locationName,
-      'Varian': item.variantValue || '-',
-      'Opening Stock': item.openingStock,
-      'Qty IN': item.qtyIn,
-      'Qty OUT': item.qtyOut,
-      'Closing Balance': item.availableStock,
-      'Satuan': item.unit,
-      'Min Stock': item.minimumStock,
-      'ROP': item.reorderPoint,
-      'Status': item.availableStock <= item.minimumStock ? 'Kritis' : item.availableStock <= item.reorderPoint ? 'Menipis' : 'Normal',
-      'Last Transaction': item.lastTransactionDate,
-    }));
-    exportToExcelFile(data, `Posisi_Persediaan_PT_IAS_${new Date().toISOString().slice(0, 10)}.xlsx`, 'Inventory_Position');
-    showToast('success', 'Ekspor Berhasil', `${data.length} baris inventaris diekspor ke Excel.`);
+    const data = filteredInventory.map((item) => {
+      const summary = itemSummaryMap.get(item.id);
+      return {
+        'Material Code': item.materialCode,
+        'Material Name': item.materialName,
+        'Kategori': item.categoryName,
+        'Lokasi Gudang': item.locationName,
+        'Varian': item.variantValue || '-',
+        'Physical Opening (Baseline)': summary?.baseline ? summary.baselineQuantity : 'Unverified',
+        'Qty IN (Post-Cutoff)': summary ? summary.qtyIn : item.qtyIn,
+        'Qty OUT (Post-Cutoff)': summary ? summary.qtyOut : item.qtyOut,
+        'Penyesuaian (Adjustment)': summary ? summary.adjustments : 0,
+        'Closing Balance (Authoritative)': item.availableStock,
+        'Satuan': item.unit,
+        'Status Baseline': summary ? summary.baselineStatus : 'UNVERIFIED',
+        'Nomor Stock Opname Baseline': summary?.baseline?.stockOpnameNumber || '-',
+        'Tanggal Cutoff Opname': summary?.baseline?.countCompletedAt || '-',
+        'Disetujui Oleh': summary?.baseline?.approvedBy || '-',
+        'Min Stock': item.minimumStock,
+        'ROP': item.reorderPoint,
+        'Status Stok':
+          item.availableStock < 0
+            ? 'DEFISIT NEGATIF'
+            : item.availableStock <= item.minimumStock
+            ? 'Kritis'
+            : item.availableStock <= item.reorderPoint
+            ? 'Menipis'
+            : 'Normal',
+        'Last Transaction': item.lastTransactionDate,
+      };
+    });
+    exportToExcelFile(data, `Posisi_Persediaan_PT_IAS_${getJakartaDateString()}.xlsx`, 'Inventory_Position');
+    showToast('success', 'Ekspor Berhasil', `${data.length} baris inventaris diekspor ke Excel dengan rekonsiliasi baseline fisik.`);
   };
 
   // Submit Consumption
   const handleSubmitConsumption = async (e: React.FormEvent) => {
     e.preventDefault();
-    const mat = activeMaterials.find((m) => m.id === consMatId);
-    const loc = activeLocations.find((l) => l.id === consLocId);
-    if (!mat || !loc) return;
+    const resolvedMat = activeMaterials.find((m) => m.id === consMatId) || activeMaterials[0];
+    const resolvedLoc = activeLocations.find((l) => l.id === consLocId) || activeLocations[0];
+    if (!resolvedMat || !resolvedLoc) {
+      showToast('error', 'Validasi Gagal', 'Pilih lokasi dan material aktif.');
+      return;
+    }
 
-    const ok = await recordConsumption({
-      date: consDate,
-      locationId: loc.id,
-      locationName: loc.name,
-      areaOrToilet: consArea,
-      shift: consShift,
-      materialId: mat.id,
-      materialCode: mat.materialCode,
-      materialName: mat.materialName,
-      variantValue: mat.variantValue,
-      quantityUsed: Number(consQty),
-      unit: mat.unit,
-      operator: currentUser?.fullName || 'Petugas',
-      notes: consNotes,
-    });
+    if (Number(consQty) <= 0) {
+      showToast('error', 'Validasi Gagal', 'Kuantitas pemakaian harus lebih dari 0.');
+      return;
+    }
 
-    if (ok) {
-      setConsumptionModalOpen(false);
-      setConsQty(10);
-      setConsNotes('');
+    setIsSubmittingCons(true);
+    try {
+      const ok = await recordConsumption({
+        date: consDate,
+        locationId: resolvedLoc.id,
+        locationName: resolvedLoc.name,
+        areaOrToilet: consArea.trim(),
+        shift: consShift,
+        materialId: resolvedMat.id,
+        materialCode: resolvedMat.materialCode,
+        materialName: resolvedMat.materialName,
+        variantValue: resolvedMat.variantValue,
+        quantityUsed: Number(consQty),
+        unit: resolvedMat.unit,
+        operator: currentUser?.fullName || 'Petugas',
+        notes: consNotes.trim(),
+      });
+
+      if (ok) {
+        setConsumptionModalOpen(false);
+        setConsQty(10);
+        setConsNotes('');
+      }
+    } finally {
+      setIsSubmittingCons(false);
     }
   };
 
   // Submit Trolley
-  const handleSubmitTrolley = (e: React.FormEvent) => {
+  const handleSubmitTrolley = async (e: React.FormEvent) => {
     e.preventDefault();
-    const loc = activeLocations.find((l) => l.id === trolleyLocId);
-    if (!loc) return;
+    const loc = activeLocations.find((l) => l.id === trolleyLocId) || activeLocations[0];
+    if (!loc) {
+      showToast('error', 'Validasi Gagal', 'Pilih lokasi penempatan trolley.');
+      return;
+    }
 
-    saveMorganTrolley({
-      quantity: Number(trolleyQty),
-      locationId: loc.id,
-      locationName: loc.name,
-      area: trolleyArea,
-      placement: trolleyPlacement,
-      condition: trolleyCondition,
-      personInCharge: trolleyPic,
-      lastCheckDate: new Date().toISOString().slice(0, 10),
-      notes: trolleyNotes,
-    });
-    setTrolleyModalOpen(false);
+    if (Number(trolleyQty) <= 0) {
+      showToast('error', 'Validasi Gagal', 'Jumlah unit trolley harus lebih dari 0.');
+      return;
+    }
+
+    setIsSubmittingTrolley(true);
+    try {
+      const ok = await saveMorganTrolley({
+        quantity: Number(trolleyQty),
+        locationId: loc.id,
+        locationName: loc.name,
+        area: trolleyArea.trim(),
+        placement: trolleyPlacement.trim(),
+        condition: trolleyCondition,
+        personInCharge: trolleyPic.trim(),
+        lastCheckDate: getJakartaDateString(),
+        notes: trolleyNotes.trim(),
+      });
+      if (ok) {
+        setTrolleyModalOpen(false);
+        setTrolleyQty(1);
+        setTrolleyNotes('');
+      }
+    } finally {
+      setIsSubmittingTrolley(false);
+    }
+  };
+
+  const handleConfirmDeleteTrolley = async () => {
+    if (!confirmDeleteTrolleyId) return;
+    setIsDeletingTrolley(true);
+    try {
+      const ok = await deleteMorganTrolley(confirmDeleteTrolleyId);
+      if (ok) {
+        setConfirmDeleteTrolleyId(null);
+      }
+    } finally {
+      setIsDeletingTrolley(false);
+    }
   };
 
   // Submit Supply Request
-  const handleSubmitSupplyRequest = (e: React.FormEvent) => {
+  const handleSubmitSupplyRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    const mat = activeMaterials.find((m) => m.id === reqMatId);
-    const loc = activeLocations.find((l) => l.id === reqLocId);
-    if (!mat || !loc) return;
+    const mat = activeMaterials.find((m) => m.id === reqMatId) || activeMaterials[0];
+    const loc = activeLocations.find((l) => l.id === reqLocId) || activeLocations[0];
+    if (!mat || !loc) {
+      showToast('error', 'Validasi Gagal', 'Pilih lokasi pemohon dan material aktif.');
+      return;
+    }
 
-    createSupplyRequest({
-      requestingLocationId: loc.id,
-      requestingUnit: reqUnitName,
-      materialId: mat.id,
-      requestedQuantity: Number(reqQty),
-      notes: reqNotes,
-    });
-    setRequestModalOpen(false);
+    if (Number(reqQty) <= 0) {
+      showToast('error', 'Validasi Gagal', 'Kuantitas permintaan harus lebih dari 0.');
+      return;
+    }
+
+    setIsSubmittingReq(true);
+    try {
+      const ok = await createSupplyRequest({
+        requestingLocationId: loc.id,
+        requestingUnit: reqUnitName.trim(),
+        materialId: mat.id,
+        requestedQuantity: Number(reqQty),
+        notes: reqNotes.trim(),
+      });
+      if (ok) {
+        setRequestModalOpen(false);
+        setReqQty(50);
+        setReqNotes('');
+      }
+    } finally {
+      setIsSubmittingReq(false);
+    }
   };
 
   // Confirm Partial/Full Supply Receipt
-  const handleConfirmReceiveSupply = (e: React.FormEvent) => {
+  const handleConfirmReceiveSupply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!receiveTargetId) return;
 
-    receiveSupplyRequest(receiveTargetId, Number(receiveQtyInput), receiveRefDoc.trim());
-    setReceiveTargetId(null);
-    setReceiveQtyInput(10);
-    setReceiveRefDoc('');
+    if (Number(receiveQtyInput) <= 0) {
+      showToast('error', 'Validasi Gagal', 'Kuantitas penerimaan harus lebih dari 0.');
+      return;
+    }
+
+    if (activeReceiveTarget && Number(receiveQtyInput) > activeReceiveTarget.outstandingQuantity) {
+      showToast(
+        'error',
+        'Melebihi Sisa Outstanding',
+        `Kuantitas diterima (${receiveQtyInput}) melebihi sisa outstanding (${activeReceiveTarget.outstandingQuantity}).`
+      );
+      return;
+    }
+
+    setIsSubmittingReceive(true);
+    try {
+      const ok = await receiveSupplyRequest(receiveTargetId, Number(receiveQtyInput), receiveRefDoc.trim());
+      if (ok) {
+        setReceiveTargetId(null);
+        setReceiveQtyInput(10);
+        setReceiveRefDoc('');
+      }
+    } finally {
+      setIsSubmittingReceive(false);
+    }
   };
 
   return (
@@ -265,11 +475,19 @@ export const PosisiPersediaan: React.FC = () => {
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Data saldo riil: Closing Stock = Opening Stock + Posted IN - Posted OUT + Adjustments (Aturan Bisnis 7)
+            Physical Opening = Baseline Stock Opname Resmi | Closing = Saldo Otoritatif Real-Time (/inventory.availableStock)
           </p>
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setMigrationDryRunModalOpen(true)}
+            className="px-3.5 py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 font-bold text-xs shadow-2xs transition flex items-center gap-1.5"
+            title="Buka pratinjau simulasi migrasi baseline fisik tanpa mutasi data produksi"
+          >
+            <Sparkles className="w-4 h-4 text-blue-600" />
+            <span>Simulasi Baseline (Dry-Run)</span>
+          </button>
           <button
             onClick={handleExportExcel}
             className="px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold text-xs shadow-2xs transition flex items-center gap-1.5"
@@ -320,7 +538,7 @@ export const PosisiPersediaan: React.FC = () => {
         <div className="space-y-4">
           {/* Filter Bar */}
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
               <div className="relative">
                 <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
                 <input
@@ -374,6 +592,20 @@ export const PosisiPersediaan: React.FC = () => {
                   <option value="KRITIS">Kritis (≤ Min)</option>
                 </select>
               </div>
+
+              <div>
+                <select
+                  value={selectedBaselineStatus}
+                  onChange={(e) => setSelectedBaselineStatus(e.target.value as any)}
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white font-medium"
+                >
+                  <option value="ALL">Semua Status Baseline</option>
+                  <option value="VERIFIED">VERIFIED (Fisik Disetujui)</option>
+                  <option value="UNVERIFIED">UNVERIFIED (Belum Ada)</option>
+                  <option value="REVIEW_REQUIRED">REVIEW REQUIRED (Perlu Tinjauan)</option>
+                  <option value="RECONCILIATION_EXCEPTION">RECONCILIATION EXCEPTION (Anomali/Defisit)</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -387,20 +619,21 @@ export const PosisiPersediaan: React.FC = () => {
                     <th className="py-3 px-4">Material Name</th>
                     <th className="py-3 px-4">Kategori</th>
                     <th className="py-3 px-4">Lokasi Gudang</th>
-                    <th className="py-3 px-4">Varian</th>
-                    <th className="py-3 px-4 text-right">Opening</th>
+                    <th className="py-3 px-4 text-right">Physical Opening</th>
                     <th className="py-3 px-4 text-right text-emerald-800">Qty IN</th>
                     <th className="py-3 px-4 text-right text-indigo-900">Qty OUT</th>
+                    <th className="py-3 px-4 text-right text-amber-900">Penyesuaian</th>
                     <th className="py-3 px-4 text-right">Closing Balance</th>
                     <th className="py-3 px-4">Satuan</th>
-                    <th className="py-3 px-4 text-center">Status</th>
+                    <th className="py-3 px-4 text-center">Status Baseline</th>
+                    <th className="py-3 px-4 text-center">Status Stok</th>
                     <th className="py-3 px-4">Last Tx</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {(activeSubTab === 'TOILET_BUILDING' ? toiletBuildingItems : filteredInventory).length === 0 ? (
                     <tr>
-                      <td colSpan={12} className="py-12 text-center text-slate-400">
+                      <td colSpan={13} className="py-12 text-center text-slate-400">
                         Belum ada data saldo stok inventaris yang terdaftar.
                       </td>
                     </tr>
@@ -408,33 +641,125 @@ export const PosisiPersediaan: React.FC = () => {
                     (activeSubTab === 'TOILET_BUILDING' ? toiletBuildingItems : filteredInventory).map((item) => {
                     const isCritical = item.availableStock <= item.minimumStock;
                     const isLow = item.availableStock > item.minimumStock && item.availableStock <= item.reorderPoint;
+                    const isNegative = item.availableStock < 0;
+                    const summary = itemSummaryMap.get(item.id);
+                    const baselineStatus = summary?.baselineStatus || 'UNVERIFIED';
 
                     return (
                       <tr key={item.id} className="hover:bg-slate-50/70 transition">
-                        <td className="py-3 px-4 font-mono font-bold text-slate-900">{item.materialCode}</td>
+                        <td className="py-3 px-4 font-mono font-bold text-slate-900">{item.materialCode || item.itemCode}</td>
                         <td className="py-3 px-4 font-semibold text-slate-900 max-w-[200px]">
-                          <div className="truncate" title={item.materialName}>{item.materialName}</div>
+                          <div className="truncate" title={item.materialName || item.itemName}>{item.materialName || item.itemName}</div>
+                          {item.variantValue && (
+                            <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded bg-blue-50 text-blue-700 font-mono text-[10px] border border-blue-200">
+                              {item.variantValue}
+                            </span>
+                          )}
                         </td>
                         <td className="py-3 px-4 text-slate-600">{item.categoryName}</td>
                         <td className="py-3 px-4 text-slate-700">{item.locationName}</td>
-                        <td className="py-3 px-4 font-mono text-[11px]">
-                          {item.variantValue ? (
-                            <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 font-bold">
-                              {item.variantValue}
-                            </span>
+                        <td className="py-3 px-4 text-right font-mono">
+                          {summary?.baseline ? (
+                            <button
+                              onClick={() => setTraceModalSummary(summary)}
+                              className="inline-flex items-center gap-1 font-bold text-emerald-800 hover:text-emerald-950 hover:underline bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200"
+                              title={`Terverifikasi dari ${summary.baseline.stockOpnameNumber}. Klik untuk audit jejak fisik.`}
+                            >
+                              <span>{summary.baselineQuantity.toLocaleString('id-ID')}</span>
+                              <ExternalLink className="w-2.5 h-2.5 opacity-60" />
+                            </button>
+                          ) : baselineStatus === 'RECONCILIATION_EXCEPTION' ? (
+                            <button
+                              onClick={() => summary && setTraceModalSummary(summary)}
+                              className="inline-flex items-center gap-1 font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200 hover:underline"
+                              title={summary?.exceptionReason || 'Anomali rekonsiliasi saldo. Klik untuk rincian.'}
+                            >
+                              <AlertTriangle className="w-3 h-3 text-rose-600" />
+                              <span>Unverified</span>
+                            </button>
+                          ) : baselineStatus === 'REVIEW_REQUIRED' ? (
+                            <button
+                              onClick={() => summary && setTraceModalSummary(summary)}
+                              className="inline-flex items-center gap-1 font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 hover:underline"
+                              title={summary?.exceptionReason || 'Perlu verifikasi / rekonsiliasi stock opname'}
+                            >
+                              <AlertTriangle className="w-3 h-3 text-amber-600" />
+                              <span>Unverified</span>
+                            </button>
                           ) : (
-                            '-'
+                            <button
+                              onClick={() => summary && setTraceModalSummary(summary)}
+                              className="text-slate-500 italic text-[11px] hover:underline"
+                              title="Belum pernah dilakukan stock opname fisik resmi. Tidak menampilkan 0 agar tidak keliru sebagai stok terhitung."
+                            >
+                              Unverified
+                            </button>
                           )}
                         </td>
-                        <td className="py-3 px-4 text-right font-mono text-slate-500">{item.openingStock}</td>
-                        <td className="py-3 px-4 text-right font-mono font-bold text-emerald-700">+{item.qtyIn}</td>
-                        <td className="py-3 px-4 text-right font-mono font-bold text-indigo-800">-{item.qtyOut}</td>
-                        <td className="py-3 px-4 text-right font-mono font-extrabold text-sm text-slate-900">
-                          {item.availableStock.toLocaleString('id-ID')}
+                        <td
+                          className="py-3 px-4 text-right font-mono font-bold text-emerald-700"
+                          title={summary?.hasLegacyCountersFallback ? 'Menggunakan counter /inventory historis (pre-ledger)' : 'Mutasi ledger pasca-cutoff'}
+                        >
+                          +{summary ? summary.qtyIn : item.qtyIn}
+                        </td>
+                        <td
+                          className="py-3 px-4 text-right font-mono font-bold text-indigo-800"
+                          title={summary?.hasLegacyCountersFallback ? 'Menggunakan counter /inventory historis (pre-ledger)' : 'Mutasi ledger pasca-cutoff'}
+                        >
+                          -{summary ? summary.qtyOut : item.qtyOut}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono font-bold text-amber-800">
+                          {(summary ? summary.adjustments : (item.totalAdjustments || 0)) >= 0 ? '+' : ''}
+                          {summary ? summary.adjustments : (item.totalAdjustments || 0)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono">
+                          {isNegative ? (
+                            <span className="inline-flex items-center gap-1 font-black text-sm text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-300">
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                              <span>{item.availableStock.toLocaleString('id-ID')}</span>
+                            </span>
+                          ) : (
+                            <span className="font-extrabold text-sm text-slate-900">
+                              {item.availableStock.toLocaleString('id-ID')}
+                            </span>
+                          )}
                         </td>
                         <td className="py-3 px-4 text-slate-700 font-medium">{item.unit}</td>
                         <td className="py-3 px-4 text-center">
-                          {isCritical ? (
+                          {baselineStatus === 'VERIFIED' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              <ShieldCheck className="w-3 h-3 text-emerald-700" />
+                              VERIFIED
+                            </span>
+                          ) : baselineStatus === 'RECONCILIATION_EXCEPTION' ? (
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200"
+                              title={summary?.exceptionReason}
+                            >
+                              <AlertTriangle className="w-3 h-3 text-rose-600" />
+                              RECONCILIATION EXCEPTION
+                            </span>
+                          ) : baselineStatus === 'REVIEW_REQUIRED' ? (
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-200"
+                              title={summary?.exceptionReason}
+                            >
+                              <AlertTriangle className="w-3 h-3 text-amber-600" />
+                              REVIEW REQUIRED
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                              <HelpCircle className="w-3 h-3 text-slate-400" />
+                              UNVERIFIED
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          {isNegative ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-600 text-white shadow-2xs">
+                              DEFISIT
+                            </span>
+                          ) : isCritical ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
                               KRITIS
                             </span>
@@ -692,7 +1017,7 @@ export const PosisiPersediaan: React.FC = () => {
 
           <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
             <table className="w-full text-left border-collapse text-xs">
-              <thead>
+                <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[11px]">
                   <th className="py-3 px-4">Lokasi Terminal</th>
                   <th className="py-3 px-4">Area / Zona</th>
@@ -702,12 +1027,13 @@ export const PosisiPersediaan: React.FC = () => {
                   <th className="py-3 px-4">PIC Lapangan</th>
                   <th className="py-3 px-4 font-mono">Pengecekan Terakhir</th>
                   <th className="py-3 px-4">Catatan Kondisi</th>
+                  {isAdmin && <th className="py-3 px-4 text-center">Aksi</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {morganTrolleys.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-slate-400">
+                    <td colSpan={isAdmin ? 9 : 8} className="py-12 text-center text-slate-400">
                       Belum ada penempatan Morgan Trolley yang terdaftar.
                     </td>
                   </tr>
@@ -738,6 +1064,18 @@ export const PosisiPersediaan: React.FC = () => {
                     <td className="py-3 px-4 text-slate-500 max-w-[200px] truncate" title={t.notes}>
                       {t.notes || '-'}
                     </td>
+                    {isAdmin && (
+                      <td className="py-3 px-4 text-center">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteTrolleyId(t.id)}
+                          className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition"
+                          title="Hapus Penempatan Trolley (Admin)"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}
@@ -797,7 +1135,9 @@ export const PosisiPersediaan: React.FC = () => {
                     </td>
                   </tr>
                 ) : (
-                  supplyRequests.map((r) => (
+                  supplyRequests.map((r) => {
+                    const normStatus = normalizeSupplyRequestStatus(r.status);
+                    return (
                   <tr key={r.id} className="hover:bg-slate-50">
                     <td className="py-3 px-4 font-mono font-bold text-blue-900">{r.requestNumber}</td>
                     <td className="py-3 px-4 font-mono text-slate-600">{r.requestDate}</td>
@@ -812,18 +1152,20 @@ export const PosisiPersediaan: React.FC = () => {
                     <td className="py-3 px-4 text-center">
                       <span
                         className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                          r.status === 'FULFILLED'
+                          normStatus === 'RECEIVED'
                             ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                            : r.status === 'PARTIAL'
+                            : normStatus === 'PARTIALLY_RECEIVED'
                             ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                            : normStatus === 'CANCELLED'
+                            ? 'bg-rose-100 text-rose-800 border border-rose-200'
                             : 'bg-blue-100 text-blue-800 border border-blue-200'
                         }`}
                       >
-                        {r.status}
+                        {normStatus}
                       </span>
                     </td>
                     <td className="py-3 px-4 text-center">
-                      {r.status !== 'FULFILLED' && canMutate ? (
+                      {normStatus !== 'RECEIVED' && normStatus !== 'CANCELLED' && r.outstandingQuantity > 0 && canMutate ? (
                         <button
                           onClick={() => {
                             setReceiveTargetId(r.id);
@@ -835,11 +1177,14 @@ export const PosisiPersediaan: React.FC = () => {
                           Terima Barang
                         </button>
                       ) : (
-                        <span className="text-slate-400 text-[11px]">Selesai</span>
+                        <span className="text-slate-400 text-[11px]">
+                          {normStatus === 'CANCELLED' ? 'Dibatalkan' : 'Selesai'}
+                        </span>
                       )}
                     </td>
                   </tr>
-                ))
+                    );
+                  })
               )}
               </tbody>
             </table>
@@ -940,15 +1285,29 @@ export const PosisiPersediaan: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-slate-700 font-bold block mb-1">Kuantitas Terpakai *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-slate-700 font-bold">Kuantitas Terpakai *</label>
+                  <span className="text-[11px] font-mono text-slate-600">
+                    Fisik: <strong>{selectedConsStockInfo.physical}</strong> • Bebas Reservasi:{' '}
+                    <strong className={selectedConsStockInfo.unreserved <= 0 ? 'text-rose-700' : 'text-emerald-700'}>
+                      {selectedConsStockInfo.unreserved} {selectedConsStockInfo.unit}
+                    </strong>
+                  </span>
+                </div>
                 <input
                   type="number"
                   min="1"
+                  max={selectedConsStockInfo.unreserved > 0 ? selectedConsStockInfo.unreserved : undefined}
                   required
                   value={consQty}
                   onChange={(e) => setConsQty(Number(e.target.value))}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono font-bold text-base"
                 />
+                {consQty > selectedConsStockInfo.unreserved && (
+                  <p className="text-[11px] text-rose-700 font-semibold mt-1">
+                    Kuantitas melebihi saldo bebas reservasi ({selectedConsStockInfo.unreserved} {selectedConsStockInfo.unit}).
+                  </p>
+                )}
               </div>
 
               <div>
@@ -966,16 +1325,19 @@ export const PosisiPersediaan: React.FC = () => {
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
               <button
                 type="button"
+                disabled={isSubmittingCons}
                 onClick={() => setConsumptionModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46]"
+                disabled={isSubmittingCons || consQty <= 0 || consQty > selectedConsStockInfo.unreserved}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46] disabled:opacity-50 flex items-center gap-1.5"
               >
-                Simpan & Potong Saldo
+                {isSubmittingCons && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isSubmittingCons ? 'Menyimpan...' : 'Simpan & Potong Saldo'}</span>
               </button>
             </div>
           </form>
@@ -1090,19 +1452,56 @@ export const PosisiPersediaan: React.FC = () => {
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 mt-4">
               <button
                 type="button"
+                disabled={isSubmittingTrolley}
                 onClick={() => setTrolleyModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46]"
+                disabled={isSubmittingTrolley}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46] disabled:opacity-50 flex items-center gap-1.5"
               >
-                Simpan Data Trolley
+                {isSubmittingTrolley && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isSubmittingTrolley ? 'Menyimpan...' : 'Simpan Data Trolley'}</span>
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Confirm Delete Morgan Trolley Modal (Admin) */}
+      {confirmDeleteTrolleyId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 text-xs space-y-4">
+            <div className="flex items-center gap-2 text-rose-700 font-bold text-sm">
+              <AlertTriangle className="w-5 h-5" />
+              <span>Hapus Catatan Morgan Trolley?</span>
+            </div>
+            <p className="text-slate-600 leading-relaxed">
+              Tindakan ini menghapus catatan penempatan Morgan Trolley dari Firestore secara permanen dan tercatat di Audit Trail.
+            </p>
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isDeletingTrolley}
+                onClick={() => setConfirmDeleteTrolleyId(null)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingTrolley}
+                onClick={handleConfirmDeleteTrolley}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {isDeletingTrolley && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isDeletingTrolley ? 'Menghapus...' : 'Ya, Hapus Data'}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1191,16 +1590,19 @@ export const PosisiPersediaan: React.FC = () => {
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 mt-4">
               <button
                 type="button"
+                disabled={isSubmittingReq}
                 onClick={() => setRequestModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46]"
+                disabled={isSubmittingReq}
+                className="px-4 py-2 rounded-xl bg-[#064e3b] text-white font-bold hover:bg-[#065f46] disabled:opacity-50 flex items-center gap-1.5"
               >
-                Kirim Permintaan
+                {isSubmittingReq && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isSubmittingReq ? 'Mengirim...' : 'Kirim Permintaan'}</span>
               </button>
             </div>
           </form>
@@ -1225,10 +1627,18 @@ export const PosisiPersediaan: React.FC = () => {
 
             <div className="space-y-3">
               <div>
-                <label className="text-slate-700 font-bold block mb-1">Kuantitas Masuk Aktual *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-slate-700 font-bold">Kuantitas Masuk Aktual *</label>
+                  {activeReceiveTarget && (
+                    <span className="text-[11px] font-mono text-slate-500">
+                      Maks: {activeReceiveTarget.outstandingQuantity} {activeReceiveTarget.unit}
+                    </span>
+                  )}
+                </div>
                 <input
                   type="number"
                   min="1"
+                  max={activeReceiveTarget?.outstandingQuantity || undefined}
                   required
                   value={receiveQtyInput}
                   onChange={(e) => setReceiveQtyInput(Number(e.target.value))}
@@ -1249,26 +1659,428 @@ export const PosisiPersediaan: React.FC = () => {
               </div>
 
               <div className="p-2.5 bg-emerald-50 rounded-lg text-[11px] text-emerald-900">
-                Penerimaan ini akan otomatis memotong sisa outstanding dan menambahkan saldo fisik ke lokasi pemohon.
+                Penerimaan ini akan otomatis memotong sisa outstanding dan menambahkan saldo fisik ke lokasi pemohon melalui ledger atomik.
               </div>
             </div>
 
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 mt-4">
               <button
                 type="button"
+                disabled={isSubmittingReceive}
                 onClick={() => setReceiveTargetId(null)}
-                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold"
+                className="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-emerald-700 text-white font-bold hover:bg-emerald-800"
+                disabled={isSubmittingReceive || receiveQtyInput <= 0}
+                className="px-4 py-2 rounded-xl bg-emerald-700 text-white font-bold hover:bg-emerald-800 disabled:opacity-50 flex items-center gap-1.5"
               >
-                Posting Penerimaan
+                {isSubmittingReceive && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isSubmittingReceive ? 'Memposting...' : 'Posting Penerimaan'}</span>
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: BASELINE PHYSICAL COUNT TRACEABILITY */}
+      {/* ------------------------------------------------------------------ */}
+      {traceModalSummary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 text-xs space-y-4">
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-sm">
+                    Audit Jejak Fisik & Rekonsiliasi Baseline
+                  </h3>
+                  <p className="text-slate-500 text-[11px]">
+                    Traceability resmi Stock Opname sebagai saldo awal operasional
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTraceModalSummary(null)}
+                className="text-slate-400 hover:text-slate-600 p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl space-y-2 border border-slate-100">
+              <div className="flex justify-between">
+                <span className="text-slate-500 font-medium">Material:</span>
+                <span className="font-bold text-slate-900">{traceModalSummary.materialId}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500 font-medium">Lokasi Gudang:</span>
+                <span className="font-bold text-slate-900">{traceModalSummary.locationId}</span>
+              </div>
+              <div className="flex justify-between items-center pt-1 border-t border-slate-200/60">
+                <span className="text-slate-500 font-medium">Status Verifikasi:</span>
+                <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                  traceModalSummary.baselineStatus === 'VERIFIED'
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                    : traceModalSummary.baselineStatus === 'RECONCILIATION_EXCEPTION'
+                    ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                    : traceModalSummary.baselineStatus === 'REVIEW_REQUIRED'
+                    ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                    : 'bg-slate-100 text-slate-700 border border-slate-200'
+                }`}>
+                  {traceModalSummary.baselineStatus.replace(/_/g, ' ')}
+                </span>
+              </div>
+            </div>
+
+            {/* Baseline Source Opname Data */}
+            {traceModalSummary.baseline ? (
+              <div className="border border-emerald-200 bg-emerald-50/50 p-3.5 rounded-xl space-y-2">
+                <div className="text-[11px] font-bold text-emerald-900 flex items-center gap-1.5 uppercase tracking-wide">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                  <span>Sumber Stock Opname Resmi:</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div>
+                    <span className="text-slate-500 block">Nomor Opname:</span>
+                    <span className="font-mono font-bold text-slate-900">
+                      {traceModalSummary.baseline.stockOpnameNumber}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Kuantitas Fisik Terhitung:</span>
+                    <span className="font-mono font-extrabold text-emerald-800 text-sm">
+                      {traceModalSummary.baseline.baselineQuantity} {traceModalSummary.baseline.unit}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Cutoff Penghitungan Fisik:</span>
+                    <span className="font-mono text-slate-700">
+                      {traceModalSummary.baseline.countCompletedAt}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Disetujui Oleh Admin:</span>
+                    <span className="font-medium text-slate-800">
+                      {traceModalSummary.baseline.approvedBy}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="border border-amber-200 bg-amber-50 p-3.5 rounded-xl space-y-1.5 text-amber-900">
+                <div className="font-bold flex items-center gap-1.5">
+                  <HelpCircle className="w-4 h-4 text-amber-700" />
+                  <span>Belum Memiliki Baseline Fisik Terverifikasi</span>
+                </div>
+                <p className="text-[11px] text-amber-800">
+                  Material pada lokasi ini belum pernah melewati persetujuan Stock Opname fisik resmi. Saldo awal saat ini bernilai 0 dan memerlukan penghitungan fisik langsung.
+                </p>
+              </div>
+            )}
+
+            {/* Reconciliation Proof Breakdown */}
+            <div className="border border-slate-200 rounded-xl p-3.5 space-y-2.5">
+              <div className="font-bold text-slate-800 text-[11px] uppercase tracking-wide">
+                Rekonsiliasi Mutasi Pasca-Cutoff (Non-Double Count):
+              </div>
+              <div className="space-y-1.5 font-mono text-[11px]">
+                <div className="flex justify-between text-slate-700">
+                  <span>Saldo Awal Fisik (Opening Baseline):</span>
+                  <span className="font-bold">{traceModalSummary.baselineQuantity}</span>
+                </div>
+                <div className="flex justify-between text-emerald-700">
+                  <span>+ Mutasi Masuk Pasca-Cutoff (Qty IN):</span>
+                  <span>+{traceModalSummary.qtyIn}</span>
+                </div>
+                <div className="flex justify-between text-indigo-800">
+                  <span>- Mutasi Keluar Pasca-Cutoff (Qty OUT):</span>
+                  <span>-{traceModalSummary.qtyOut}</span>
+                </div>
+                <div className="flex justify-between text-amber-800">
+                  <span>± Penyesuaian Opname Lanjutan:</span>
+                  <span>{traceModalSummary.adjustments >= 0 ? '+' : ''}{traceModalSummary.adjustments}</span>
+                </div>
+                <div className="pt-2 border-t border-slate-200 flex justify-between font-bold text-slate-900 text-xs">
+                  <span>= Saldo Rekonstruksi Akhir:</span>
+                  <span>{traceModalSummary.reconstructedClosing}</span>
+                </div>
+                <div className="flex justify-between text-slate-500 text-[10px]">
+                  <span>Saldo Otoritatif Saat Ini (/inventory):</span>
+                  <span>{traceModalSummary.authoritativeBalance}</span>
+                </div>
+                <div className={`flex justify-between font-bold text-[11px] pt-1 border-t border-dashed ${
+                  traceModalSummary.isReconciled ? 'text-emerald-700' : 'text-rose-700'
+                }`}>
+                  <span>Selisih Rekonsiliasi:</span>
+                  <span>{traceModalSummary.reconciliationDifference} ({traceModalSummary.isReconciled ? 'PARITAS PASS' : 'MISMATCH'})</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setTraceModalSummary(null)}
+                className="px-4 py-2 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition"
+              >
+                Tutup Audit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* MODAL: DEVELOPMENT BASELINE MIGRATION DRY-RUN PREVIEW (PHASE 7) */}
+      {/* ------------------------------------------------------------------ */}
+      {migrationDryRunModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col p-6 shadow-2xl border border-slate-200 text-xs space-y-4">
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-700">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-sm">
+                    Simulasi Pratinjau Migrasi Baseline Fisik (Dry-Run Preview)
+                  </h3>
+                  <p className="text-slate-500 text-[11px]">
+                    Lingkungan Pengujian & Pengembangan — Strict Read-Only (Nol Penulisan ke Firestore Produksi)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMigrationDryRunModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl text-blue-950 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-blue-700 shrink-0" />
+                <span>
+                  Simulasi ini mengevaluasi Stock Opname fisik kandidat tanpa mengubah dokumen Firestore produksi.
+                </span>
+              </div>
+              <span className="font-mono font-bold text-[11px] bg-white px-2 py-0.5 rounded border border-blue-200">
+                Mode Dry-Run
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-[11px]">
+              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                <span className="text-slate-500 block">Total Gudang</span>
+                <span className="font-mono font-extrabold text-slate-900 text-sm">{dryRunReport.totalWarehouseBalances}</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200">
+                <span className="text-emerald-700 block">Kandidat PASS</span>
+                <span className="font-mono font-extrabold text-emerald-800 text-sm">{dryRunReport.verifiedCandidateCount}</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200">
+                <span className="text-amber-700 block">Unverified</span>
+                <span className="font-mono font-extrabold text-amber-800 text-sm">{dryRunReport.unverifiedCount}</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-orange-50 border border-orange-200">
+                <span className="text-orange-700 block">Review Req.</span>
+                <span className="font-mono font-extrabold text-orange-800 text-sm">{dryRunReport.reviewRequiredCount}</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200">
+                <span className="text-rose-700 block">Exception</span>
+                <span className="font-mono font-extrabold text-rose-800 text-sm">{dryRunReport.exceptionCount}</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200">
+                <span className="text-blue-700 block">Duplikat / No TS</span>
+                <span className="font-mono font-extrabold text-blue-900 text-sm">
+                  {dryRunReport.duplicateCandidateConflicts} / {dryRunReport.missingTimestampCount}
+                </span>
+              </div>
+            </div>
+
+            {/* Dry-Run Register Table */}
+            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-xl">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead className="sticky top-0 bg-slate-100 text-slate-700 font-bold uppercase text-[10px] border-b border-slate-200">
+                  <tr>
+                    <th className="py-2.5 px-3">SKU Material</th>
+                    <th className="py-2.5 px-3">Gudang</th>
+                    <th className="py-2.5 px-3">Kandidat Opname</th>
+                    <th className="py-2.5 px-3 text-right">Fisik Baseline</th>
+                    <th className="py-2.5 px-3 text-right">Post-Count (+/-)</th>
+                    <th className="py-2.5 px-3 text-right">Closing Otoritatif</th>
+                    <th className="py-2.5 px-3 text-right">Rekonstruksi</th>
+                    <th className="py-2.5 px-3 text-center">Status Audit</th>
+                    <th className="py-2.5 px-3">Catatan & Eksepsi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                  {dryRunReport.rows.map((row) => {
+                    const isCandidatePassed = row.auditStatus === 'PASS';
+                    const isNegative = row.authoritativeClosing < 0;
+
+                    return (
+                      <tr key={row.balanceId} className="hover:bg-slate-50">
+                        <td className="py-2.5 px-3 font-bold text-slate-900">{row.materialCode}</td>
+                        <td className="py-2.5 px-3 text-slate-600 font-sans">{row.locationName}</td>
+                        <td className="py-2.5 px-3 text-slate-800">
+                          <div>{row.candidateOpnameNumber || '-'}</div>
+                          {row.duplicateCandidatesCount > 0 && (
+                            <span className="text-[9px] font-sans text-amber-700 font-bold">
+                              +{row.duplicateCandidatesCount} kandidat ganda
+                            </span>
+                          )}
+                          {row.missingTimestampFlag && (
+                            <span className="text-[9px] font-sans text-rose-700 font-bold block">
+                              Timestamp cutoff hilang
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-bold text-emerald-800">
+                          {row.proposedBaselineQty !== null ? row.proposedBaselineQty : '-'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right text-slate-600">
+                          {row.postCountMovementsCount > 0 ? (
+                            <span>
+                              +{row.postCountQtyIn} / -{row.postCountQtyOut}
+                            </span>
+                          ) : (
+                            '0'
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-extrabold text-slate-900">
+                          {isNegative ? (
+                            <span className="text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200">
+                              {row.authoritativeClosing}
+                            </span>
+                          ) : (
+                            row.authoritativeClosing
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-bold text-slate-700">
+                          {row.reconstructedClosing}
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-sans">
+                          {isCandidatePassed ? (
+                            <span className="px-2 py-0.5 rounded-full font-extrabold text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              PASS
+                            </span>
+                          ) : row.auditStatus === 'RECONCILIATION_EXCEPTION' ? (
+                            <span className="px-2 py-0.5 rounded-full font-extrabold text-[9px] bg-rose-100 text-rose-800 border border-rose-200">
+                              RECONCILIATION EXCEPTION
+                            </span>
+                          ) : row.auditStatus === 'REVIEW_REQUIRED' ? (
+                            <span className="px-2 py-0.5 rounded-full font-extrabold text-[9px] bg-amber-100 text-amber-800 border border-amber-200">
+                              REVIEW REQUIRED
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full font-bold text-[9px] bg-slate-100 text-slate-600 border border-slate-200">
+                              UNVERIFIED
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-600 font-sans text-[10px]">
+                          {row.exceptions.length > 0 ? row.exceptions.join('; ') : row.recommendation}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {dryRunReport.exceptionSummary.length > 0 && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 max-h-24 overflow-y-auto">
+                <div className="font-bold mb-1">Laporan Eksepsi Audit ({dryRunReport.exceptionSummary.length}):</div>
+                <ul className="list-disc pl-4 space-y-0.5 font-mono text-[10px]">
+                  {dryRunReport.exceptionSummary.map((ex, i) => (
+                    <li key={i}>{ex}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {confirmReconcileOpen && (
+              <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="text-emerald-950">
+                  <span className="font-bold block">Konfirmasi Rekonsiliasi Baseline Terkontrol (Admin Only)</span>
+                  <span className="text-[11px] text-emerald-800">
+                    Menetapkan {dryRunReport.rows.filter((r) => r.canApplyReconciliation).length} baseline fisik v1 dari Stock Opname ADJUSTED pertama tanpa mengubah histori mutasi atau baseline aktif yang sudah ada.
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    disabled={isApplyingReconciliation}
+                    onClick={() => setConfirmReconcileOpen(false)}
+                    className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 font-semibold"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isApplyingReconciliation}
+                    onClick={async () => {
+                      setIsApplyingReconciliation(true);
+                      try {
+                        const targetIds = dryRunReport.rows
+                          .filter((r) => r.canApplyReconciliation)
+                          .map((r) => r.balanceId);
+                        await reconcileOpnameBaselines(targetIds);
+                        setConfirmReconcileOpen(false);
+                      } finally {
+                        setIsApplyingReconciliation(false);
+                      }
+                    }}
+                    className="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold disabled:opacity-50"
+                  >
+                    {isApplyingReconciliation ? 'Menerapkan...' : 'Ya, Tetapkan Baseline V1'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-slate-500">
+                Total item diaudit: {dryRunReport.totalWarehouseBalances} saldo gudang (loc-in-transit dikecualikan)
+              </span>
+              <div className="flex items-center gap-2">
+                {currentUser?.role === 'ADMIN' &&
+                  dryRunReport.rows.some((r) => r.canApplyReconciliation) &&
+                  !confirmReconcileOpen && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmReconcileOpen(true)}
+                      className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-bold transition flex items-center gap-1.5"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>
+                        Terapkan Rekonsiliasi Baseline Terkontrol ({dryRunReport.rows.filter((r) => r.canApplyReconciliation).length})
+                      </span>
+                    </button>
+                  )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmReconcileOpen(false);
+                    setMigrationDryRunModalOpen(false);
+                  }}
+                  className="px-4 py-2 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition"
+                >
+                  Selesai Pratinjau
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

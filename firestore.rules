@@ -50,25 +50,42 @@ service cloud.firestore {
       );
     }
 
-    function isActiveStaff() {
-      return isAdmin() || (
-        isSignedIn() && hasUserDoc() && getUserData().status == 'Active'
-      );
-    }
-
-    // User Accounts and Profiles: Self-update restricted to non-security fields; role/status admin-only
+    // User Accounts & Profiles: strict least-privilege read/list, hardened self-signup & self-update
     match /users/{userId} {
-      allow get: if isCurrentUser(userId) || isAdmin() || isSignedIn();
-      allow list: if isSignedIn();
-      allow create: if isSignedIn();
+      allow get: if isCurrentUser(userId) || isAdmin();
+      allow list: if isAdmin() || (
+        isSignedIn() &&
+        request.auth.token.email != null &&
+        resource.data.email == request.auth.token.email
+      );
+      allow create: if isAdmin() || (
+        isCurrentUser(userId) &&
+        request.resource.data.id == request.auth.uid &&
+        (
+          isBootstrappedAdmin() ||
+          (
+            request.resource.data.role == 'LOGISTIK' &&
+            request.resource.data.status == 'Active'
+          )
+        )
+      );
       allow update: if isAdmin() || (
         isCurrentUser(userId) &&
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status', 'email', 'employeeId', 'permissions', 'assignedWarehouse'])
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'role',
+          'status',
+          'email',
+          'employeeId',
+          'permissions',
+          'assignedWarehouse',
+          'authorizedLocation',
+          'id'
+        ])
       );
       allow delete: if isAdmin() && !isCurrentUser(userId);
     }
 
-    // Master Data Collections: Public read for all authenticated users, write restricted to authorized roles
+    // Master Data Collections: Authenticated read, Logistik/Admin create & update, Admin-only delete
     match /materials/{id} {
       allow read: if isSignedIn();
       allow create, update: if isLogistik() || isAdmin();
@@ -105,84 +122,206 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // Authoritative Physical Balances
+    // Authoritative Physical Balances: Non-negative enforcement on standard movements
     match /inventory/{id} {
       allow read: if isSignedIn();
-      allow create, update: if isLogistik() || isAdmin();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.materialId is string &&
+        request.resource.data.materialId.size() > 0 &&
+        request.resource.data.locationId is string &&
+        request.resource.data.locationId.size() > 0 &&
+        request.resource.data.availableStock is number &&
+        request.resource.data.availableStock >= 0;
+      allow update: if (isLogistik() || isAdmin()) &&
+        request.resource.data.materialId is string &&
+        request.resource.data.locationId is string &&
+        request.resource.data.availableStock is number &&
+        (
+          request.resource.data.availableStock >= 0 ||
+          (isAdmin() && request.resource.data.availableStock == resource.data.availableStock)
+        );
       allow delete: if isAdmin();
     }
 
-    // Immutable Movement Ledger: Append-only by Logistik/Admin, read-only for authenticated users, never modified or deleted
+    // Official Physical Stock Opname Opening Baselines: Admin-only creation from approved Stock Opname, supersede-only update, delete forbidden
+    match /inventoryBaselines/{id} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin() &&
+        request.resource.data.keys().hasAll([
+          'baselineId', 'materialId', 'locationId', 'baselineQuantity',
+          'stockOpnameId', 'stockOpnameNumber', 'baselineVersion', 'status'
+        ]) &&
+        request.resource.data.baselineId is string &&
+        request.resource.data.baselineId.size() <= 160 &&
+        request.resource.data.materialId is string &&
+        request.resource.data.materialId.size() > 0 &&
+        request.resource.data.locationId is string &&
+        request.resource.data.locationId.size() > 0 &&
+        request.resource.data.locationId != 'loc-in-transit' &&
+        request.resource.data.baselineQuantity is number &&
+        request.resource.data.baselineQuantity >= 0 &&
+        request.resource.data.stockOpnameId is string &&
+        exists(/databases/$(database)/documents/stockOpnames/$(request.resource.data.stockOpnameId)) &&
+        request.resource.data.baselineVersion is number &&
+        request.resource.data.baselineVersion >= 1 &&
+        request.resource.data.status == 'ACTIVE';
+      allow update: if isAdmin() &&
+        request.resource.data.status in ['ACTIVE', 'SUPERSEDED'] &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'supersededAt', 'supersededBy', 'notes']);
+      allow delete: if false;
+    }
+
+    // Immutable Movement Ledger: Append-only by Logistik/Admin, never modified or deleted
     match /inventoryMovements/{id} {
       allow read: if isSignedIn();
       allow create: if (isLogistik() || isAdmin()) &&
         request.resource.data.movementId is string &&
         request.resource.data.materialId is string &&
+        request.resource.data.materialId.size() > 0 &&
         request.resource.data.locationId is string &&
+        request.resource.data.locationId.size() > 0 &&
         request.resource.data.delta is number &&
+        request.resource.data.quantity is number &&
         request.resource.data.quantity >= 0 &&
         request.resource.data.balanceBefore is number &&
         request.resource.data.balanceAfter is number &&
-        request.resource.data.idempotencyKey is string;
+        request.resource.data.balanceAfter >= 0 &&
+        request.resource.data.idempotencyKey is string &&
+        request.resource.data.idempotencyKey.size() > 0 &&
+        request.resource.data.sourceDocumentId is string;
       allow update, delete: if false;
     }
 
     // Operational Transactions
     match /goodsReceipts/{id} {
       allow read: if isSignedIn();
-      allow create: if isLogistik() || isAdmin();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.quantity is number &&
+        request.resource.data.quantity > 0 &&
+        request.resource.data.destinationLocationId is string &&
+        request.resource.data.destinationLocationId != 'loc-in-transit' &&
+        request.resource.data.materialId is string &&
+        request.resource.data.materialId.size() > 0;
       allow update, delete: if isAdmin();
     }
 
+    // Goods Issues: Site Head is strictly read-only; only Admin can approve/reject PENDING_APPROVAL
     match /goodsIssues/{id} {
       allow read: if isSignedIn();
-      allow create: if isLogistik() || isAdmin();
-      allow update: if isSiteHead() || isAdmin();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.status == 'PENDING_APPROVAL' &&
+        request.resource.data.requestedQuantity is number &&
+        request.resource.data.requestedQuantity > 0 &&
+        request.resource.data.locationId is string &&
+        request.resource.data.locationId != 'loc-in-transit' &&
+        request.resource.data.itemId is string &&
+        request.resource.data.itemId.size() > 0;
+      allow update: if isAdmin() &&
+        resource.data.status == 'PENDING_APPROVAL' &&
+        request.resource.data.status in ['APPROVED', 'REJECTED'];
       allow delete: if isAdmin();
     }
 
     match /stockTransfers/{id} {
       allow read: if isSignedIn();
-      allow create, update: if isLogistik() || isAdmin();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.status == 'IN_TRANSIT' &&
+        request.resource.data.quantity is number &&
+        request.resource.data.quantity > 0 &&
+        request.resource.data.originLocationId is string &&
+        request.resource.data.destinationLocationId is string &&
+        request.resource.data.originLocationId != request.resource.data.destinationLocationId &&
+        request.resource.data.originLocationId != 'loc-in-transit' &&
+        request.resource.data.destinationLocationId != 'loc-in-transit';
+      allow update: if (isLogistik() || isAdmin()) &&
+        resource.data.status == 'IN_TRANSIT' &&
+        request.resource.data.status in ['COMPLETED', 'REJECTED', 'CANCELLED'];
       allow delete: if isAdmin();
     }
 
     match /stockOpnames/{id} {
       allow read: if isSignedIn();
-      allow create: if isLogistik() || isAdmin();
-      allow update: if isAdmin();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.verificationStatus == 'PENDING_APPROVAL' &&
+        request.resource.data.physicalQuantity is number &&
+        request.resource.data.physicalQuantity >= 0 &&
+        request.resource.data.locationId is string &&
+        request.resource.data.locationId != 'loc-in-transit' &&
+        request.resource.data.itemId is string &&
+        request.resource.data.itemId.size() > 0;
+      allow update: if isAdmin() && (
+        (
+          resource.data.verificationStatus == 'PENDING_APPROVAL' &&
+          request.resource.data.verificationStatus in ['ADJUSTED', 'REJECTED']
+        ) ||
+        (
+          resource.data.verificationStatus == 'ADJUSTED' &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isBaselineAnchor', 'establishedBaselineId'])
+        )
+      );
       allow delete: if isAdmin();
     }
 
     match /consumptions/{id} {
       allow read: if isSignedIn();
-      allow create, update: if isLogistik() || isAdmin();
-      allow delete: if isAdmin();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.quantityUsed is number &&
+        request.resource.data.quantityUsed > 0 &&
+        request.resource.data.locationId is string &&
+        request.resource.data.locationId != 'loc-in-transit' &&
+        request.resource.data.materialId is string &&
+        request.resource.data.materialId.size() > 0;
+      allow update, delete: if isAdmin();
     }
 
     match /morganTrolleys/{id} {
       allow read: if isSignedIn();
-      allow create, update: if isLogistik() || isAdmin();
+      allow create, update: if (isLogistik() || isAdmin()) &&
+        request.resource.data.quantity is number &&
+        request.resource.data.quantity > 0 &&
+        request.resource.data.locationId is string &&
+        request.resource.data.locationId != 'loc-in-transit';
       allow delete: if isAdmin();
     }
 
     match /supplyRequests/{id} {
       allow read: if isSignedIn();
-      allow create, update: if isLogistik() || isAdmin();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.requestedQuantity is number &&
+        request.resource.data.requestedQuantity > 0 &&
+        request.resource.data.receivedQuantity == 0 &&
+        request.resource.data.outstandingQuantity == request.resource.data.requestedQuantity &&
+        request.resource.data.requestingLocationId is string &&
+        request.resource.data.requestingLocationId != 'loc-in-transit' &&
+        request.resource.data.status in ['OPEN', 'REQUESTED'];
+      allow update: if (isLogistik() || isAdmin()) &&
+        request.resource.data.receivedQuantity is number &&
+        request.resource.data.receivedQuantity >= resource.data.receivedQuantity &&
+        request.resource.data.receivedQuantity <= request.resource.data.requestedQuantity &&
+        request.resource.data.outstandingQuantity is number &&
+        request.resource.data.outstandingQuantity >= 0 &&
+        request.resource.data.status in ['OPEN', 'PARTIAL', 'FULFILLED', 'REQUESTED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
       allow delete: if isAdmin();
     }
 
+    // Approvals: Site Head is strictly read-only; only Admin can approve/reject PENDING
     match /approvals/{id} {
       allow read: if isSignedIn();
-      allow create: if isLogistik() || isAdmin();
-      allow update: if isSiteHead() || isAdmin();
+      allow create: if (isLogistik() || isAdmin()) &&
+        request.resource.data.status == 'PENDING' &&
+        request.resource.data.referenceId is string;
+      allow update: if isAdmin() &&
+        resource.data.status == 'PENDING' &&
+        request.resource.data.status in ['APPROVED', 'REJECTED'];
       allow delete: if isAdmin();
     }
 
     // Audit Trail: Append-Only by authenticated users, Read by Admins and Site Heads, Never modified or deleted
     match /auditLogs/{id} {
       allow read: if isAdmin() || isSiteHead();
-      allow create: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.action is string &&
+        request.resource.data.module is string;
       allow update, delete: if false;
     }
 

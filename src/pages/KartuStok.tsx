@@ -17,8 +17,15 @@ import {
   Printer,
   ChevronRight,
   RefreshCw,
+  ShieldCheck,
+  ShieldAlert,
+  History,
 } from 'lucide-react';
 import { exportToExcelFile, exportToCsvFile } from '../utils/excelUtils';
+import {
+  parseJakartaTimestampMs,
+  getJakartaDateString,
+} from '../services/inventoryEngine';
 
 interface StockLedgerRow {
   id: string;
@@ -46,6 +53,7 @@ export const KartuStok: React.FC = () => {
     stockTransfers,
     stockOpnames,
     inventoryMovements,
+    inventoryBaselines,
     consumptions,
     currentUser,
     setActiveNav,
@@ -55,12 +63,12 @@ export const KartuStok: React.FC = () => {
   const [selectedLocationId, setSelectedLocationId] = useState<string>(activeLocations[0]?.id || '');
   const [selectedMaterialId, setSelectedMaterialId] = useState<string>(activeMaterials[0]?.id || '');
   const [startDate, setStartDate] = useState<string>(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
+    const d = new Date(Date.now() - 30 * 86400000);
+    return getJakartaDateString(d);
   });
-  const [endDate, setEndDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = useState<string>(() => getJakartaDateString());
   const [searchDoc, setSearchDoc] = useState<string>('');
+  const [showPreBaselineHistory, setShowPreBaselineHistory] = useState<boolean>(false);
 
   // Selected Material & Location Objects
   const currentMaterial = useMemo(
@@ -73,6 +81,23 @@ export const KartuStok: React.FC = () => {
     [activeLocations, selectedLocationId]
   );
 
+  // Active Physical Baseline for this SKU & Location
+  const activeBaseline = useMemo(() => {
+    if (!currentMaterial || !currentLocation) return null;
+    const matId = currentMaterial.id;
+    const matCode = currentMaterial.materialCode || currentMaterial.itemCode || '';
+    const locId = currentLocation.id;
+
+    return (
+      (inventoryBaselines || []).find(
+        (b) =>
+          (b.materialId === matId || b.materialCode === matCode) &&
+          b.locationId === locId &&
+          b.status === 'ACTIVE'
+      ) || null
+    );
+  }, [inventoryBaselines, currentMaterial, currentLocation]);
+
   // Live Inventory balance in this warehouse for this material
   const liveInventoryBalance = useMemo(() => {
     if (!currentMaterial || !currentLocation) return 0;
@@ -84,7 +109,7 @@ export const KartuStok: React.FC = () => {
     return inv ? inv.availableStock : 0;
   }, [items, currentMaterial, currentLocation]);
 
-  // Build the complete Chronological Mutation Ledger
+  // Build the complete Chronological Mutation Ledger with Physical Baseline Anchor
   const ledgerData = useMemo(() => {
     if (!currentMaterial || !currentLocation) return [];
 
@@ -96,9 +121,12 @@ export const KartuStok: React.FC = () => {
       (i) => (i.materialId === matId || i.itemId === matId || i.materialCode === matCode) && i.locationId === locId
     );
 
-    // 1. If authoritative ledger movements exist for this SKU and warehouse, use them directly
+    // 1. If authoritative ledger movements exist for this SKU and warehouse (strictly exclude REVERSED)
     const matchedMovements = (inventoryMovements || []).filter(
-      (m) => (m.materialId === matId || m.materialCode === matCode) && m.locationId === locId
+      (m) =>
+        (m.materialId === matId || m.materialCode === matCode) &&
+        m.locationId === locId &&
+        m.status !== 'REVERSED'
     );
 
     if (matchedMovements.length > 0) {
@@ -109,35 +137,101 @@ export const KartuStok: React.FC = () => {
         return a.createdAt.localeCompare(b.createdAt);
       });
 
-      return sortedMovements.map((mov, idx) => {
-        const typeMapping: Record<string, { type: StockLedgerRow['type']; label: string }> = {
-          OPENING_BALANCE: { type: 'SALDO_AWAL', label: 'Saldo Awal (Baseline)' },
-          GOODS_RECEIPT: { type: 'BARANG_MASUK', label: 'Barang Masuk (GR)' },
-          GOODS_ISSUE: { type: 'BARANG_KELUAR', label: 'Barang Keluar (GI)' },
-          TRANSFER_DISPATCH: { type: 'TRANSFER_KELUAR', label: 'Transfer Keluar (TR-OUT)' },
-          TRANSFER_RECEIPT: { type: 'TRANSFER_MASUK', label: 'Transfer Masuk (TR-IN)' },
-          TRANSFER_RETURN: { type: 'TRANSFER_MASUK', label: 'Transfer Retur ke Asal' },
-          TRANSFER_LOSS: { type: 'TRANSFER_KELUAR', label: 'Kerugian Transit (Loss)' },
-          TRANSFER_DAMAGE: { type: 'TRANSFER_KELUAR', label: 'Kerusakan Transit (Damage)' },
-          STOCK_OPNAME_ADJUSTMENT: {
-            type: 'OPNAME_ADJUSTMENT',
-            label: mov.delta >= 0 ? 'Opname Surplus (+)' : 'Opname Defisit (-)',
-          },
-          DAILY_CONSUMPTION: { type: 'BARANG_KELUAR', label: 'Pemakaian Harian (Konsumsi)' },
-          ADMIN_CORRECTION: {
-            type: mov.delta >= 0 ? 'BARANG_MASUK' : 'BARANG_KELUAR',
-            label: 'Koreksi Saldo Administrator',
-          },
-        };
+      const typeMapping: Record<string, { type: StockLedgerRow['type']; label: string }> = {
+        OPENING_BALANCE: { type: 'SALDO_AWAL', label: 'Saldo Awal (Baseline)' },
+        GOODS_RECEIPT: { type: 'BARANG_MASUK', label: 'Barang Masuk (GR)' },
+        GOODS_ISSUE: { type: 'BARANG_KELUAR', label: 'Barang Keluar (GI)' },
+        TRANSFER_DISPATCH: { type: 'TRANSFER_KELUAR', label: 'Transfer Keluar (TR-OUT)' },
+        TRANSFER_RECEIPT: { type: 'TRANSFER_MASUK', label: 'Transfer Masuk (TR-IN)' },
+        TRANSFER_RETURN: { type: 'TRANSFER_MASUK', label: 'Transfer Retur ke Asal' },
+        TRANSFER_LOSS: { type: 'TRANSFER_KELUAR', label: 'Kerugian Transit (Loss)' },
+        TRANSFER_DAMAGE: { type: 'TRANSFER_KELUAR', label: 'Kerusakan Transit (Damage)' },
+        STOCK_OPNAME_ADJUSTMENT: {
+          type: 'OPNAME_ADJUSTMENT',
+          label: 'Penyesuaian Opname',
+        },
+        DAILY_CONSUMPTION: { type: 'BARANG_KELUAR', label: 'Pemakaian Harian (Konsumsi)' },
+        ADMIN_CORRECTION: {
+          type: 'BARANG_MASUK',
+          label: 'Koreksi Saldo Administrator',
+        },
+      };
 
+      const ledgerRows: StockLedgerRow[] = [];
+
+      // If active physical baseline is established:
+      if (activeBaseline) {
+        const cutoffMs =
+          activeBaseline.countCompletedTimestampMs ||
+          parseJakartaTimestampMs(activeBaseline.countCompletedAt || activeBaseline.approvedAt || activeBaseline.createdAt);
+        const baselineSourceMovId = activeBaseline.sourceMovementId || '';
+
+        // Anchor row is official physical baseline
+        ledgerRows.push({
+          id: `baseline-anchor-${activeBaseline.id}`,
+          date: activeBaseline.cutoffDate || (activeBaseline.countCompletedAt ? activeBaseline.countCompletedAt.slice(0, 10) : '2026-10-01'),
+          transactionNumber: `BSL-${activeBaseline.stockOpnameNumber}`,
+          type: 'SALDO_AWAL',
+          typeLabel: 'Saldo Awal Fisik Resmi',
+          referenceDoc: `Stock Opname #${activeBaseline.stockOpnameNumber}`,
+          originDest: currentLocation.name,
+          qtyIn: activeBaseline.baselineQuantity,
+          qtyOut: 0,
+          runningBalance: activeBaseline.baselineQuantity,
+          actor: activeBaseline.approvedBy || activeBaseline.createdBy || 'Petugas Opname',
+          notes: `Official Physical Baseline (Cutoff: ${activeBaseline.countCompletedAt || activeBaseline.cutoffDate || '-'})`,
+          status: 'VERIFIED',
+        });
+
+        let running = activeBaseline.baselineQuantity;
+
+        // Only include post-cutoff movements and strictly neutralize the baseline anchor adjustment
+        for (const mov of sortedMovements) {
+          const isAnchorMov =
+            (Boolean(baselineSourceMovId) && (mov.id === baselineSourceMovId || mov.movementId === baselineSourceMovId)) ||
+            (mov.movementType === 'STOCK_OPNAME_ADJUSTMENT' &&
+              (mov.sourceDocumentId === activeBaseline.stockOpnameId || mov.sourceDocumentId === activeBaseline.stockOpnameNumber));
+
+          const movMs = mov.createdTimestampMs || parseJakartaTimestampMs(mov.createdAt);
+
+          // Neutralize anchor movement and any pre-cutoff movements
+          if (isAnchorMov || (cutoffMs > 0 && movMs <= cutoffMs)) {
+            continue;
+          }
+
+          running += mov.delta;
+          const mapped = typeMapping[mov.movementType] || { type: 'BARANG_MASUK', label: mov.movementType };
+
+          ledgerRows.push({
+            id: `mov-row-${mov.id}`,
+            date: mov.createdAt ? mov.createdAt.slice(0, 10) : getJakartaDateString(),
+            transactionNumber: mov.sourceDocumentId || mov.movementId,
+            type: mapped.type,
+            typeLabel: mov.movementType === 'STOCK_OPNAME_ADJUSTMENT' ? (mov.delta >= 0 ? 'Opname Surplus (+)' : 'Opname Defisit (-)') : mapped.label,
+            referenceDoc: mov.sourceDocumentType ? `[${mov.sourceDocumentType}] ${mov.sourceDocumentId}` : mov.sourceDocumentId,
+            originDest: mov.locationName,
+            qtyIn: mov.delta > 0 ? mov.delta : 0,
+            qtyOut: mov.delta < 0 ? Math.abs(mov.delta) : 0,
+            runningBalance: running,
+            actor: mov.recordedBy || 'System',
+            notes: mov.notes || '',
+            status: mov.status,
+          });
+        }
+
+        return ledgerRows;
+      }
+
+      // No active baseline: standard movement projection
+      return sortedMovements.map((mov, idx) => {
         const mapped = typeMapping[mov.movementType] || { type: 'BARANG_MASUK', label: mov.movementType };
 
         return {
           id: `mov-row-${idx}-${mov.id}`,
-          date: mov.createdAt ? mov.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
+          date: mov.createdAt ? mov.createdAt.slice(0, 10) : getJakartaDateString(),
           transactionNumber: mov.sourceDocumentId || mov.movementId,
           type: mapped.type,
-          typeLabel: mapped.label,
+          typeLabel: mov.movementType === 'STOCK_OPNAME_ADJUSTMENT' ? (mov.delta >= 0 ? 'Opname Surplus (+)' : 'Opname Defisit (-)') : mapped.label,
           referenceDoc: mov.sourceDocumentType ? `[${mov.sourceDocumentType}] ${mov.sourceDocumentId}` : mov.sourceDocumentId,
           originDest: mov.locationName,
           qtyIn: mov.delta > 0 ? mov.delta : 0,
@@ -188,10 +282,10 @@ export const KartuStok: React.FC = () => {
       }
     });
 
-    // Approved Goods Issues (Barang Keluar)
+    // Approved Goods Issues (Barang Keluar) — strict location match
     goodsIssues.forEach((gi) => {
       const matchMat = gi.itemId === matId || gi.itemCode === matCode;
-      const matchLoc = !gi.locationId || gi.locationId === locId;
+      const matchLoc = gi.locationId === locId;
       const isApproved = gi.status === 'APPROVED';
 
       if (matchMat && matchLoc && isApproved) {
@@ -307,12 +401,32 @@ export const KartuStok: React.FC = () => {
       return a.createdAt.localeCompare(b.createdAt);
     });
 
-    // Calculate running balance starting strictly from openingStock
-    const openingBal = currentBal ? (Number(currentBal.openingStock) || 0) : 0;
+    // Calculate running balance starting strictly from active physical baseline (or legacy openingStock if unverified)
+    const openingBal = activeBaseline
+      ? Number(activeBaseline.baselineQuantity) || 0
+      : currentBal
+      ? Number(currentBal.openingStock) || 0
+      : 0;
     let running = openingBal;
     const ledgerWithBalances: StockLedgerRow[] = [];
 
-    if (openingBal > 0) {
+    if (activeBaseline) {
+      ledgerWithBalances.push({
+        id: `baseline-anchor-${activeBaseline.id}`,
+        date: activeBaseline.cutoffDate || (activeBaseline.countCompletedAt ? activeBaseline.countCompletedAt.slice(0, 10) : '2026-10-01'),
+        transactionNumber: `BSL-${activeBaseline.stockOpnameNumber}`,
+        type: 'SALDO_AWAL',
+        typeLabel: 'Saldo Awal Fisik Resmi',
+        referenceDoc: `Stock Opname #${activeBaseline.stockOpnameNumber}`,
+        originDest: currentLocation.name,
+        qtyIn: openingBal,
+        qtyOut: 0,
+        runningBalance: openingBal,
+        actor: activeBaseline.approvedBy || activeBaseline.createdBy || 'Petugas Opname',
+        notes: `Official Physical Baseline (Cutoff: ${activeBaseline.countCompletedAt || activeBaseline.cutoffDate || '-'})`,
+        status: 'VERIFIED',
+      });
+    } else if (openingBal > 0) {
       ledgerWithBalances.push({
         id: `row-open-${matId}-${locId}`,
         date: currentBal?.lastTransactionDate || '2026-10-01',
@@ -325,12 +439,24 @@ export const KartuStok: React.FC = () => {
         qtyOut: 0,
         runningBalance: openingBal,
         actor: 'Administrator',
-        notes: 'Saldo awal baseline persediaan gudang',
+        notes: 'Saldo awal historis sementara (belum terverifikasi opname fisik)',
         status: 'POSTED',
       });
     }
 
+    const cutoffMs = activeBaseline
+      ? activeBaseline.countCompletedTimestampMs ||
+        parseJakartaTimestampMs(activeBaseline.countCompletedAt || activeBaseline.approvedAt || activeBaseline.createdAt)
+      : 0;
+
     allEvents.forEach((evt, idx) => {
+      if (activeBaseline) {
+        const evtMs = parseJakartaTimestampMs(evt.createdAt || evt.date);
+        const isBaselineOpname = evt.refNum === activeBaseline.stockOpnameNumber;
+        if (isBaselineOpname || (cutoffMs > 0 && evtMs <= cutoffMs)) {
+          return;
+        }
+      }
       running += evt.qtyIn - evt.qtyOut;
       ledgerWithBalances.push({
         id: `row-${idx}-${evt.refNum}`,
@@ -350,7 +476,36 @@ export const KartuStok: React.FC = () => {
     });
 
     return ledgerWithBalances;
-  }, [currentMaterial, currentLocation, items, goodsReceipts, goodsIssues, stockTransfers, stockOpnames, inventoryMovements, consumptions]);
+  }, [currentMaterial, currentLocation, activeBaseline, items, goodsReceipts, goodsIssues, stockTransfers, stockOpnames, inventoryMovements, consumptions]);
+
+  // Historical Pre-Baseline Movements (Read-Only Archive View)
+  const preBaselineMovements = useMemo(() => {
+    if (!activeBaseline || !currentMaterial || !currentLocation) return [];
+    const matId = currentMaterial.id;
+    const matCode = currentMaterial.materialCode || currentMaterial.itemCode || '';
+    const locId = currentLocation.id;
+    const cutoffMs =
+      activeBaseline.countCompletedTimestampMs ||
+      parseJakartaTimestampMs(activeBaseline.countCompletedAt || activeBaseline.approvedAt || activeBaseline.createdAt);
+    const baselineSourceMovId = activeBaseline.sourceMovementId || '';
+
+    return (inventoryMovements || [])
+      .filter(
+        (m) =>
+          (m.materialId === matId || m.materialCode === matCode) &&
+          m.locationId === locId &&
+          m.status !== 'REVERSED'
+      )
+      .filter((m) => {
+        const isAnchor =
+          (Boolean(baselineSourceMovId) && (m.id === baselineSourceMovId || m.movementId === baselineSourceMovId)) ||
+          (m.movementType === 'STOCK_OPNAME_ADJUSTMENT' &&
+            (m.sourceDocumentId === activeBaseline.stockOpnameId || m.sourceDocumentId === activeBaseline.stockOpnameNumber));
+        const movMs = m.createdTimestampMs || parseJakartaTimestampMs(m.createdAt);
+        return isAnchor || (cutoffMs > 0 && movMs <= cutoffMs);
+      })
+      .sort((a, b) => (a.postingSequence || a.createdTimestampMs || 0) - (b.postingSequence || b.createdTimestampMs || 0));
+  }, [activeBaseline, currentMaterial, currentLocation, inventoryMovements]);
 
   // Apply Date and Search Filters
   const filteredLedger = useMemo(() => {
@@ -377,7 +532,7 @@ export const KartuStok: React.FC = () => {
   const handleExportCSV = () => {
     if (!currentMaterial || !currentLocation) return;
     const matCode = currentMaterial.materialCode || currentMaterial.itemCode || 'SKU';
-    const filename = `Kartu_Stok_${matCode}_${currentLocation.code}_${new Date().toISOString().slice(0, 10)}.csv`;
+    const filename = `Kartu_Stok_${matCode}_${currentLocation.code}_${getJakartaDateString()}.csv`;
     const exportData = filteredLedger.map((r) => ({
       'Tanggal': r.date,
       'No Transaksi': r.transactionNumber,
@@ -395,7 +550,7 @@ export const KartuStok: React.FC = () => {
   const handleExportExcel = () => {
     if (!currentMaterial || !currentLocation) return;
     const matCode = currentMaterial.materialCode || currentMaterial.itemCode || 'SKU';
-    const filename = `Kartu_Stok_${matCode}_${currentLocation.code}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const filename = `Kartu_Stok_${matCode}_${currentLocation.code}_${getJakartaDateString()}.xlsx`;
     const data = filteredLedger.map((r) => ({
       'Tanggal': r.date,
       'No Transaksi': r.transactionNumber,
@@ -566,6 +721,92 @@ export const KartuStok: React.FC = () => {
         </div>
       </div>
 
+      {/* Baseline Verification Status Banner */}
+      {activeBaseline ? (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 sm:p-5 shadow-2xs text-emerald-950 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="p-2.5 rounded-xl bg-emerald-600 text-white shadow-xs shrink-0 mt-0.5">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-200/80 text-emerald-800 uppercase tracking-wide">
+                  Verified Physical Baseline
+                </span>
+                <span className="text-xs text-emerald-700 font-mono">
+                  Opname #{activeBaseline.stockOpnameNumber}
+                </span>
+              </div>
+              <h3 className="font-extrabold text-emerald-900 text-sm sm:text-base mt-1">
+                Saldo Awal Fisik Resmi: {activeBaseline.baselineQuantity.toLocaleString()} {currentMaterial?.unit}
+              </h3>
+              <p className="text-xs text-emerald-800/90 mt-0.5 leading-relaxed">
+                Ditetapkan dari Stock Opname Fisik resmi pertama. Cutoff: <strong>{activeBaseline.countCompletedAt || activeBaseline.cutoffDate}</strong> oleh <strong>{activeBaseline.approvedBy || activeBaseline.createdBy}</strong>. Dokumen mutasi opname sumber telah dinetralisir untuk mencegah double-counting.
+              </p>
+              {preBaselineMovements.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowPreBaselineHistory((prev) => !prev)}
+                  className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-800 hover:text-emerald-950 underline"
+                >
+                  <History className="w-3.5 h-3.5" />
+                  <span>
+                    {showPreBaselineHistory
+                      ? `Sembunyikan Arsip Mutasi Pra-Baseline (${preBaselineMovements.length})`
+                      : `Lihat Arsip Mutasi Pra-Baseline (${preBaselineMovements.length} transaksi sebelum cutoff)`}
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-3 shrink-0 bg-white/80 backdrop-blur-xs px-3.5 py-2.5 rounded-xl border border-emerald-200 text-xs font-mono">
+            <div className="text-right">
+              <span className="text-[10px] text-emerald-700 block uppercase font-bold">Paritas Formula</span>
+              <span className="text-emerald-900 font-bold">
+                {activeBaseline.baselineQuantity} + ({totalIn} - {totalOut}) = {finalLedgerBalance}
+              </span>
+            </div>
+            <div className={`px-2 py-1 rounded font-bold text-[11px] ${isReconciled ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+              {isReconciled ? 'TIE-OUT OK' : 'VARIANCE DETECTED'}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 sm:p-5 shadow-2xs text-amber-950 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="p-2.5 rounded-xl bg-amber-500 text-white shadow-xs shrink-0 mt-0.5">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-200 text-amber-900 uppercase tracking-wide">
+                  {liveInventoryBalance < 0 ? 'Review Required / Defisit' : 'Not Verified Baseline'}
+                </span>
+                <span className="text-xs text-amber-800 font-mono">
+                  Belum Ada Opname Baseline
+                </span>
+              </div>
+              <h3 className="font-extrabold text-amber-950 text-sm sm:text-base mt-1">
+                {liveInventoryBalance < 0
+                  ? `Defisit Persediaan: Saldo Buku ${liveInventoryBalance} ${currentMaterial?.unit}`
+                  : `Saldo Awal Historis Sementara (Belum Diverifikasi Fisik)`}
+              </h3>
+              <p className="text-xs text-amber-900/90 mt-0.5 leading-relaxed">
+                {liveInventoryBalance < 0
+                  ? `SKU ini mengalami defisit fisik di ${currentLocation?.name}. Wajib laksanakan Stock Opname Fisik resmi untuk menetapkan baseline awal yang sah.`
+                  : `Belum terdapat data Berita Acara Stock Opname fisik resmi pertama untuk SKU ini di ${currentLocation?.name}.`}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setActiveNav('stock-opname')}
+            className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-xs transition shrink-0"
+          >
+            Buka Modul Stock Opname
+          </button>
+        </div>
+      )}
+
       {/* Summary KPI Cards & Reconciliation Status */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
         {/* Item & Location Summary */}
@@ -646,6 +887,58 @@ export const KartuStok: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Collapsible Archive of Pre-Baseline Historical Movements */}
+      {showPreBaselineHistory && activeBaseline && preBaselineMovements.length > 0 && (
+        <div className="bg-slate-50 rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+          <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-100/70">
+            <div>
+              <h3 className="text-xs sm:text-sm font-extrabold text-slate-800 flex items-center gap-2">
+                <History className="w-4 h-4 text-slate-600" />
+                <span>Arsip Historis Mutasi Pra-Baseline (Read-Only — Sebelum Cutoff {activeBaseline.countCompletedAt})</span>
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Mutasi historis ini tetap tersimpan permanen sebagai jejak audit dan tidak dijumlahkan ulang ke saldo baseline fisik.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowPreBaselineHistory(false)}
+              className="text-xs font-bold text-slate-600 hover:text-slate-900 px-2.5 py-1 rounded-lg bg-white border border-slate-200"
+            >
+              Tutup Arsip
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="bg-slate-100/60 text-slate-600 border-b border-slate-200 font-bold uppercase text-[10px]">
+                  <th className="py-2.5 px-4">Waktu</th>
+                  <th className="py-2.5 px-4">Dokumen</th>
+                  <th className="py-2.5 px-4">Tipe</th>
+                  <th className="py-2.5 px-4 text-right">Delta</th>
+                  <th className="py-2.5 px-4 text-right">Saldo Saat Itu</th>
+                  <th className="py-2.5 px-4">Catatan</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200/70">
+                {preBaselineMovements.map((pm) => (
+                  <tr key={pm.id} className="hover:bg-white/80">
+                    <td className="py-2 px-4 font-mono text-slate-600 whitespace-nowrap">{pm.createdAt}</td>
+                    <td className="py-2 px-4 font-mono font-bold text-slate-800">{pm.sourceDocumentId || pm.movementId}</td>
+                    <td className="py-2 px-4 font-mono text-[11px] text-slate-700">{pm.movementType}</td>
+                    <td className={`py-2 px-4 text-right font-mono font-bold ${pm.delta >= 0 ? 'text-blue-700' : 'text-amber-700'}`}>
+                      {pm.delta >= 0 ? `+${pm.delta}` : pm.delta}
+                    </td>
+                    <td className="py-2 px-4 text-right font-mono text-slate-700">{pm.balanceAfter}</td>
+                    <td className="py-2 px-4 text-slate-600 max-w-xs truncate">{pm.notes || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Main Ledger Table */}
       <div className="bg-white rounded-2xl border border-[#D9E2EF] shadow-2xs overflow-hidden">

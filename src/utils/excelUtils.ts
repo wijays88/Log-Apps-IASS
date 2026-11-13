@@ -6,6 +6,8 @@ export type ImportModuleType =
   | 'LOCATION_MASTER'
   | 'MATERIAL_CATEGORY'
   | 'UNIT_OF_MEASURE'
+  | 'SUPPLIER_MASTER'
+  | 'REQUESTING_UNIT_MASTER'
   | 'INVENTORY_OPENING'
   | 'GOODS_RECEIPT'
   | 'GOODS_ISSUE'
@@ -69,14 +71,35 @@ export const MODULE_FIELD_DEFINITIONS: Record<ImportModuleType, { title: string;
       { key: 'description', label: 'Description', required: false, type: 'string', description: 'Keterangan penggunaan', sampleValue: 'Kemasan pelumas drum' },
     ],
   },
+  SUPPLIER_MASTER: {
+    title: 'Supplier Master (Pemasok)',
+    fields: [
+      { key: 'code', label: 'Supplier Code', required: true, type: 'string', description: 'Kode unik pemasok', sampleValue: 'SUP-MSL' },
+      { key: 'name', label: 'Supplier Name', required: true, type: 'string', description: 'Nama perusahaan pemasok', sampleValue: 'CV Multi Sarana Logistik' },
+      { key: 'contactPerson', label: 'Contact Person', required: false, type: 'string', description: 'Nama PIC pemasok', sampleValue: 'Hendra Wijaya' },
+      { key: 'phone', label: 'Phone Number', required: false, type: 'string', description: 'Nomor telepon/WA', sampleValue: '081234567890' },
+      { key: 'email', label: 'Email', required: false, type: 'string', description: 'Email resmi vendor', sampleValue: 'sales@multisarana.co.id' },
+      { key: 'address', label: 'Address', required: false, type: 'string', description: 'Alamat vendor', sampleValue: 'Kawasan Pergudangan Bandara CGK' },
+    ],
+  },
+  REQUESTING_UNIT_MASTER: {
+    title: 'Unit Pemohon Master (Divisi)',
+    fields: [
+      { key: 'code', label: 'Unit Code', required: true, type: 'string', description: 'Kode unit pemohon', sampleValue: 'UNIT-T1B-TOILET' },
+      { key: 'name', label: 'Unit Name', required: true, type: 'string', description: 'Nama unit pemohon', sampleValue: 'Divisi Kebersihan Toilet Terminal 1B' },
+      { key: 'division', label: 'Division', required: true, type: 'string', description: 'Departemen/divisi induk', sampleValue: 'Facility & Cleaning' },
+      { key: 'contactPerson', label: 'Contact Person', required: false, type: 'string', description: 'Koordinator unit', sampleValue: 'Agus Setiawan' },
+      { key: 'description', label: 'Description', required: false, type: 'string', description: 'Keterangan area layanan', sampleValue: 'Area Kedatangan & Keberangkatan 1B' },
+    ],
+  },
   INVENTORY_OPENING: {
-    title: 'Saldo Awal Inventaris (Opening Balance)',
+    title: 'Draft Opname Saldo Awal (Approval Required)',
     fields: [
       { key: 'materialCode', label: 'Material Code', required: true, type: 'string', description: 'Kode material yang sudah terdaftar', sampleValue: 'MAT-TIS-HT01' },
       { key: 'locationCode', label: 'Location Code', required: true, type: 'string', description: 'Kode lokasi gudang tujuan', sampleValue: 'LOC-T1B' },
-      { key: 'openingStock', label: 'Opening Stock', required: true, type: 'number', description: 'Jumlah fisik saldo awal disetujui', sampleValue: 300 },
-      { key: 'minimumStock', label: 'Minimum Stock', required: false, type: 'number', description: 'Batas min stok', sampleValue: 150 },
-      { key: 'reorderPoint', label: 'Reorder Point', required: false, type: 'number', description: 'Batas ROP', sampleValue: 250 },
+      { key: 'openingStock', label: 'Physical Count (Opening)', required: true, type: 'number', description: 'Jumlah fisik awal (diproses ke Stock Opname PENDING_APPROVAL)', sampleValue: 300 },
+      { key: 'minimumStock', label: 'Minimum Stock', required: false, type: 'number', description: 'Batas min stok (opsional)', sampleValue: 150 },
+      { key: 'reorderPoint', label: 'Reorder Point', required: false, type: 'number', description: 'Batas ROP (opsional)', sampleValue: 250 },
       { key: 'variantValue', label: 'Variant Value', required: false, type: 'string', description: 'Ukuran jika ada (S, M, L / 60x100)', sampleValue: '' },
     ],
   },

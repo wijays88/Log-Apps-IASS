@@ -22,8 +22,14 @@ import {
   ChevronRight,
   ShieldCheck,
   Eye,
+  AlertCircle,
 } from 'lucide-react';
 import { exportToExcelFile, exportToCsvFile } from '../utils/excelUtils';
+import {
+  buildInventoryReconciliationMap,
+  getJakartaDateString,
+} from '../services/inventoryEngine';
+import { IN_TRANSIT_LOCATION_ID } from '../types';
 
 export const Dashboard: React.FC = () => {
   const {
@@ -36,10 +42,59 @@ export const Dashboard: React.FC = () => {
     goodsReceipts,
     goodsIssues,
     stockTransfers,
+    stockOpnames,
+    inventoryBaselines,
+    inventoryMovements,
     approvals,
     setActiveNav,
     currentUser,
   } = useApp();
+
+  // Baseline Coverage & Integrity Metrics (strictly exclude virtual in-transit bucket)
+  const physicalWarehouseItems = useMemo(
+    () =>
+      items.filter(
+        (i) => i.locationId !== IN_TRANSIT_LOCATION_ID && i.locationId !== 'loc-in-transit'
+      ),
+    [items]
+  );
+
+  const itemSummaryMap = useMemo(
+    () =>
+      buildInventoryReconciliationMap({
+        inventory: physicalWarehouseItems,
+        inventoryBaselines,
+        inventoryMovements,
+        stockOpnames,
+      }),
+    [physicalWarehouseItems, inventoryBaselines, inventoryMovements, stockOpnames]
+  );
+
+  const verifiedBaselinesCount = useMemo(() => {
+    return physicalWarehouseItems.filter(
+      (item) => itemSummaryMap.get(item.id)?.baselineStatus === 'VERIFIED'
+    ).length;
+  }, [physicalWarehouseItems, itemSummaryMap]);
+
+  const verifiedCoveragePct = useMemo(() => {
+    if (physicalWarehouseItems.length === 0) return 0;
+    return Math.min(100, Math.round((verifiedBaselinesCount / physicalWarehouseItems.length) * 100));
+  }, [verifiedBaselinesCount, physicalWarehouseItems]);
+
+  const unverifiedBaselinesCount = useMemo(() => {
+    return Math.max(0, physicalWarehouseItems.length - verifiedBaselinesCount);
+  }, [physicalWarehouseItems, verifiedBaselinesCount]);
+
+  const reconciliationExceptions = useMemo(() => {
+    return physicalWarehouseItems.filter((item) => {
+      const summary = itemSummaryMap.get(item.id);
+      return (
+        summary?.baselineStatus === 'RECONCILIATION_EXCEPTION' ||
+        summary?.baselineStatus === 'REVIEW_REQUIRED' ||
+        (Boolean(summary?.baseline) && !summary?.isReconciled)
+      );
+    });
+  }, [physicalWarehouseItems, itemSummaryMap]);
 
   // Stock Table Filter & Pagination States
   const [searchTerm, setSearchTerm] = useState('');
@@ -54,25 +109,28 @@ export const Dashboard: React.FC = () => {
   // Selected Detail Modal
   const [selectedDetailItem, setSelectedDetailItem] = useState<any | null>(null);
 
-  // 1. KPI Calculations (Authoritative Real-Time Data)
+  // 1. KPI Calculations (Authoritative Real-Time Physical Warehouse Data)
   const totalActiveSKUs = useMemo(
-    () => (activeMaterials.length > 0 ? activeMaterials.length : new Set(items.map((i) => i.materialId || i.itemId)).size),
-    [activeMaterials, items]
+    () => (activeMaterials.length > 0 ? activeMaterials.length : new Set(physicalWarehouseItems.map((i) => i.materialId || i.itemId)).size),
+    [activeMaterials, physicalWarehouseItems]
   );
 
   const totalActiveWarehouses = useMemo(
-    () => (activeLocations.length > 0 ? activeLocations.length : locations.length),
+    () =>
+      activeLocations.length > 0
+        ? activeLocations.length
+        : locations.filter((l) => l.id !== IN_TRANSIT_LOCATION_ID && l.id !== 'loc-in-transit').length,
     [activeLocations, locations]
   );
 
   const totalStockQuantity = useMemo(
-    () => items.reduce((acc, curr) => acc + (Number(curr.availableStock) || 0), 0),
-    [items]
+    () => physicalWarehouseItems.reduce((acc, curr) => acc + (Number(curr.availableStock) || 0), 0),
+    [physicalWarehouseItems]
   );
 
-  // Estimated Inventory Valuation (using cost from materials if present, default 25000 per unit for industrial supplies)
+  // Estimated Inventory Valuation (physical warehouse stock only)
   const estimatedValuation = useMemo(() => {
-    return items.reduce((sum, item) => {
+    return physicalWarehouseItems.reduce((sum, item) => {
       const mat = materials.find(
         (m) =>
           m.id === item.materialId ||
@@ -83,10 +141,10 @@ export const Dashboard: React.FC = () => {
       const unitCost = mat?.unitCost || mat?.unitPrice || 35000;
       return sum + (Number(item.availableStock) || 0) * unitCost;
     }, 0);
-  }, [items, materials]);
+  }, [physicalWarehouseItems, materials]);
 
   // Movement & Flow Counters
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getJakartaDateString();
   const todayReceipts = goodsReceipts.filter((gr) => gr.receiptDate?.startsWith(todayStr) || gr.createdAt?.startsWith(todayStr));
   const todayReceiptsCount = todayReceipts.reduce((sum, r) => sum + (Number(r.quantity) || 0), 0);
 
@@ -99,40 +157,42 @@ export const Dashboard: React.FC = () => {
   );
 
   const criticalItems = useMemo(
-    () => items.filter((item) => item.availableStock > 0 && item.availableStock <= item.minimumStock),
-    [items]
+    () => physicalWarehouseItems.filter((item) => item.availableStock > 0 && item.availableStock <= item.minimumStock),
+    [physicalWarehouseItems]
   );
 
   const emptyStockItems = useMemo(
-    () => items.filter((item) => Number(item.availableStock) <= 0),
-    [items]
+    () => physicalWarehouseItems.filter((item) => Number(item.availableStock) <= 0),
+    [physicalWarehouseItems]
   );
 
   const negativeStockItems = useMemo(
-    () => items.filter((item) => Number(item.availableStock) < 0),
-    [items]
+    () => physicalWarehouseItems.filter((item) => Number(item.availableStock) < 0),
+    [physicalWarehouseItems]
   );
 
   const pendingApprovalsCount = approvals.filter((a) => a.status === 'PENDING').length;
   const inTransitTransfersCount = stockTransfers.filter((t) => t.status === 'IN_TRANSIT').length;
 
-  // 2. Warehouse Distribution Calculation
+  // 2. Warehouse Distribution Calculation (exclude loc-in-transit)
   const locationStats = useMemo(() => {
-    return locations.map((loc) => {
-      const locItems = items.filter((i) => i.locationId === loc.id);
-      const totalQty = locItems.reduce((acc, curr) => acc + (Number(curr.availableStock) || 0), 0);
-      const skuCount = locItems.length;
-      return {
-        ...loc,
-        totalQty,
-        skuCount,
-      };
-    });
-  }, [locations, items]);
+    return locations
+      .filter((loc) => loc.id !== IN_TRANSIT_LOCATION_ID && loc.id !== 'loc-in-transit')
+      .map((loc) => {
+        const locItems = physicalWarehouseItems.filter((i) => i.locationId === loc.id);
+        const totalQty = locItems.reduce((acc, curr) => acc + (Number(curr.availableStock) || 0), 0);
+        const skuCount = locItems.length;
+        return {
+          ...loc,
+          totalQty,
+          skuCount,
+        };
+      });
+  }, [locations, physicalWarehouseItems]);
 
   // 3. Filtered Stock Position Table Data
   const filteredStockData = useMemo(() => {
-    return items.filter((item) => {
+    return physicalWarehouseItems.filter((item) => {
       const code = (item.materialCode || item.itemCode || '').toLowerCase();
       const name = (item.materialName || item.itemName || '').toLowerCase();
       const locName = (item.locationName || '').toLowerCase();
@@ -150,7 +210,7 @@ export const Dashboard: React.FC = () => {
 
       return matchSearch && matchLoc && matchCat && matchStatus;
     });
-  }, [items, searchTerm, selectedLocation, selectedCategory, selectedStockStatus]);
+  }, [physicalWarehouseItems, searchTerm, selectedLocation, selectedCategory, selectedStockStatus]);
 
   // Sorted and Paginated Stock Data
   const sortedStockData = useMemo(() => {
@@ -197,7 +257,7 @@ export const Dashboard: React.FC = () => {
       'ROP': item.reorderPoint,
       'Status': item.availableStock <= 0 ? 'KOSONG' : item.availableStock <= item.minimumStock ? 'MENIPIS' : 'NORMAL',
     }));
-    exportToExcelFile(data, `Posisi_Stok_Control_Tower_${new Date().toISOString().slice(0, 10)}.xlsx`, 'Posisi Stok');
+    exportToExcelFile(data, `Posisi_Stok_Control_Tower_${getJakartaDateString()}.xlsx`, 'Posisi Stok');
   };
 
   const handleExportCSV = () => {
@@ -211,7 +271,7 @@ export const Dashboard: React.FC = () => {
       'Stok Minimum': item.minimumStock,
       'Status': item.availableStock <= 0 ? 'KOSONG' : item.availableStock <= item.minimumStock ? 'MENIPIS' : 'NORMAL',
     }));
-    exportToCsvFile(csvData, `Posisi_Stok_Control_Tower_${new Date().toISOString().slice(0, 10)}.csv`);
+    exportToCsvFile(csvData, `Posisi_Stok_Control_Tower_${getJakartaDateString()}.csv`);
   };
 
   return (
@@ -271,6 +331,80 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Physical Stock Opname Baseline & Reconciliation Summary Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div
+          onClick={() => setActiveNav('Posisi Persediaan')}
+          className="bg-white p-4 rounded-2xl border border-[#D9E2EF] shadow-2xs hover:border-[#3182CE] transition cursor-pointer"
+        >
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="font-bold text-[11px] uppercase tracking-wider text-[#64748B]">Cakupan Baseline Fisik</span>
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-2xl font-extrabold font-mono text-emerald-700">{verifiedCoveragePct}%</span>
+            <span className="text-xs text-[#64748B] font-mono">
+              ({verifiedBaselinesCount}/{physicalWarehouseItems.length} SKU-Gudang)
+            </span>
+          </div>
+          <div className="mt-1 text-[11px] text-[#64748B]">
+            Terverifikasi oleh Stock Opname fisik resmi
+          </div>
+        </div>
+
+        <div
+          onClick={() => setActiveNav('Stock Opname')}
+          className={`p-4 rounded-2xl border shadow-2xs transition cursor-pointer ${
+            unverifiedBaselinesCount > 0 ? 'bg-amber-50/50 border-amber-200 hover:border-amber-400' : 'bg-white border-[#D9E2EF]'
+          }`}
+        >
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="font-bold text-[11px] uppercase tracking-wider text-amber-900">Belum Terverifikasi</span>
+            <Clock className="w-4 h-4 text-amber-600" />
+          </div>
+          <div className="text-2xl font-extrabold font-mono text-amber-800">{unverifiedBaselinesCount}</div>
+          <div className="mt-1 text-[11px] text-amber-700 font-medium">
+            {unverifiedBaselinesCount > 0 ? 'Menunggu opname fisik perdana' : 'Seluruh gudang terverifikasi'}
+          </div>
+        </div>
+
+        <div
+          onClick={() => setActiveNav('Posisi Persediaan')}
+          className={`p-4 rounded-2xl border shadow-2xs transition cursor-pointer ${
+            negativeStockItems.length > 0 ? 'bg-rose-50/70 border-rose-300 hover:border-rose-500' : 'bg-white border-[#D9E2EF]'
+          }`}
+        >
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="font-bold text-[11px] uppercase tracking-wider text-rose-900">Alert Saldo Negatif</span>
+            <AlertTriangle className="w-4 h-4 text-rose-600" />
+          </div>
+          <div className={`text-2xl font-extrabold font-mono ${negativeStockItems.length > 0 ? 'text-rose-700' : 'text-[#123B66]'}`}>
+            {negativeStockItems.length}
+          </div>
+          <div className="mt-1 text-[11px] text-rose-700 font-medium">
+            {negativeStockItems.length > 0 ? 'Wajib audit & opname segera' : 'Nol defisit saldo negatif'}
+          </div>
+        </div>
+
+        <div
+          onClick={() => setActiveNav('Posisi Persediaan')}
+          className={`p-4 rounded-2xl border shadow-2xs transition cursor-pointer ${
+            reconciliationExceptions.length > 0 ? 'bg-rose-50/60 border-rose-200 hover:border-rose-400' : 'bg-blue-50/40 border-blue-200'
+          }`}
+        >
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="font-bold text-[11px] uppercase tracking-wider text-[#123B66]">Eksepsi Rekonsiliasi</span>
+            <AlertCircle className={`w-4 h-4 ${reconciliationExceptions.length > 0 ? 'text-rose-600' : 'text-blue-600'}`} />
+          </div>
+          <div className={`text-2xl font-extrabold font-mono ${reconciliationExceptions.length > 0 ? 'text-rose-700' : 'text-blue-700'}`}>
+            {reconciliationExceptions.length}
+          </div>
+          <div className="mt-1 text-[11px] text-[#64748B] font-medium">
+            {reconciliationExceptions.length > 0 ? 'Status REVIEW REQUIRED / Mismatch' : 'Ledger & saldo otoritatif sinkron'}
+          </div>
+        </div>
+      </div>
 
       {/* 10 Executive KPI Cards Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">

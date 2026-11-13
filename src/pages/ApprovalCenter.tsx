@@ -41,6 +41,10 @@ export const ApprovalCenter: React.FC = () => {
   const [approveItem, setApproveItem] = useState<ApprovalRequest | null>(null);
   const [approvedQty, setApprovedQty] = useState<number>(0);
 
+  // Double-submit / concurrent click protection
+  const [processingId, setProcessingId] = useState<string | null>(null);
+  const [isSubmittingModal, setIsSubmittingModal] = useState(false);
+
   const pendingList = approvals.filter((a) => a.status === 'PENDING');
   const historyList = approvals.filter((a) => a.status !== 'PENDING');
 
@@ -54,6 +58,7 @@ export const ApprovalCenter: React.FC = () => {
   });
 
   const handleStartApprove = async (item: ApprovalRequest) => {
+    if (processingId || isSubmittingModal) return;
     const perm = can('APPROVE_TRANSACTIONS');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Administrator yang memiliki wewenang persetujuan.');
@@ -64,24 +69,39 @@ export const ApprovalCenter: React.FC = () => {
       setApproveItem(item);
       setApprovedQty(item.details.quantity);
     } else if (item.type === 'STOCK_OPNAME_ADJUSTMENT') {
-      await approveOpnameAdjustment(item.referenceId);
+      setProcessingId(item.id);
+      try {
+        await approveOpnameAdjustment(item.referenceId);
+      } finally {
+        setProcessingId(null);
+      }
     }
   };
 
   const handleConfirmGoodsIssueApprove = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!approveItem) return;
+    if (!approveItem || isSubmittingModal) return;
 
     if (approvedQty <= 0) {
       showToast('error', 'Validasi Gagal', 'Jumlah disetujui harus lebih dari 0.');
       return;
     }
 
-    await approveGoodsIssue(approveItem.referenceId, approvedQty);
-    setApproveItem(null);
+    setIsSubmittingModal(true);
+    setProcessingId(approveItem.id);
+    try {
+      const ok = await approveGoodsIssue(approveItem.referenceId, approvedQty);
+      if (ok) {
+        setApproveItem(null);
+      }
+    } finally {
+      setIsSubmittingModal(false);
+      setProcessingId(null);
+    }
   };
 
   const handleStartReject = (item: ApprovalRequest) => {
+    if (processingId || isSubmittingModal) return;
     const perm = can('APPROVE_TRANSACTIONS');
     if (!perm.allowed) {
       showToast('error', 'Akses Ditolak', perm.reason || 'Hanya Administrator yang memiliki wewenang penolakan.');
@@ -93,21 +113,30 @@ export const ApprovalCenter: React.FC = () => {
 
   const handleConfirmReject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!rejectItem) return;
+    if (!rejectItem || isSubmittingModal) return;
 
     if (!rejectionReason.trim()) {
       showToast('error', 'Validasi Gagal', 'Alasan penolakan wajib diisi.');
       return;
     }
 
-    if (rejectItem.type === 'BARANG_KELUAR') {
-      await rejectGoodsIssue(rejectItem.referenceId, rejectionReason);
-    } else if (rejectItem.type === 'STOCK_OPNAME_ADJUSTMENT') {
-      await rejectOpnameAdjustment(rejectItem.referenceId, rejectionReason);
+    setIsSubmittingModal(true);
+    setProcessingId(rejectItem.id);
+    try {
+      let ok = false;
+      if (rejectItem.type === 'BARANG_KELUAR') {
+        ok = await rejectGoodsIssue(rejectItem.referenceId, rejectionReason);
+      } else if (rejectItem.type === 'STOCK_OPNAME_ADJUSTMENT') {
+        ok = await rejectOpnameAdjustment(rejectItem.referenceId, rejectionReason);
+      }
+      if (ok) {
+        setRejectItem(null);
+        setRejectionReason('');
+      }
+    } finally {
+      setIsSubmittingModal(false);
+      setProcessingId(null);
     }
-
-    setRejectItem(null);
-    setRejectionReason('');
   };
 
   return (
@@ -275,14 +304,16 @@ export const ApprovalCenter: React.FC = () => {
                         <>
                           <button
                             onClick={() => handleStartApprove(app)}
-                            className="w-full sm:w-36 py-2 px-3 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] text-white text-xs font-bold shadow-2xs transition flex items-center justify-center gap-1.5"
+                            disabled={processingId !== null || isSubmittingModal}
+                            className="w-full sm:w-36 py-2 px-3 rounded-xl bg-[#1F5FAF] hover:bg-[#123B66] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-2xs transition flex items-center justify-center gap-1.5"
                           >
                             <Check className="w-4 h-4" />
-                            <span>Setujui</span>
+                            <span>{processingId === app.id ? 'Memproses...' : 'Setujui'}</span>
                           </button>
                           <button
                             onClick={() => handleStartReject(app)}
-                            className="w-full sm:w-36 py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold border border-rose-200 transition flex items-center justify-center gap-1.5"
+                            disabled={processingId !== null || isSubmittingModal}
+                            className="w-full sm:w-36 py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 disabled:opacity-50 disabled:cursor-not-allowed text-rose-700 text-xs font-bold border border-rose-200 transition flex items-center justify-center gap-1.5"
                           >
                             <X className="w-4 h-4" />
                             <span>Tolak</span>
@@ -320,8 +351,9 @@ export const ApprovalCenter: React.FC = () => {
               </h3>
               <button
                 type="button"
+                disabled={isSubmittingModal}
                 onClick={() => setApproveItem(null)}
-                className="p-1 text-slate-400 hover:text-slate-700"
+                className="p-1 text-slate-400 hover:text-slate-700 disabled:opacity-50"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -362,16 +394,18 @@ export const ApprovalCenter: React.FC = () => {
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
               <button
                 type="button"
+                disabled={isSubmittingModal}
                 onClick={() => setApproveItem(null)}
-                className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 font-semibold"
+                className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 font-semibold disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] transition shadow-2xs"
+                disabled={isSubmittingModal}
+                className="px-4 py-2 rounded-xl bg-[#1F5FAF] text-white font-bold hover:bg-[#123B66] disabled:opacity-50 disabled:cursor-not-allowed transition shadow-2xs"
               >
-                Otorisasi & Kurangi Stok
+                {isSubmittingModal ? 'Memproses...' : 'Otorisasi & Kurangi Stok'}
               </button>
             </div>
           </form>
@@ -391,8 +425,9 @@ export const ApprovalCenter: React.FC = () => {
               </h3>
               <button
                 type="button"
+                disabled={isSubmittingModal}
                 onClick={() => setRejectItem(null)}
-                className="p-1 text-slate-400 hover:text-slate-700"
+                className="p-1 text-slate-400 hover:text-slate-700 disabled:opacity-50"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -422,16 +457,18 @@ export const ApprovalCenter: React.FC = () => {
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
               <button
                 type="button"
+                disabled={isSubmittingModal}
                 onClick={() => setRejectItem(null)}
-                className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 font-semibold"
+                className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 font-semibold disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-rose-600 text-white font-bold hover:bg-rose-700"
+                disabled={isSubmittingModal}
+                className="px-4 py-2 rounded-xl bg-rose-600 text-white font-bold hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Konfirmasi Penolakan
+                {isSubmittingModal ? 'Memproses...' : 'Konfirmasi Penolakan'}
               </button>
             </div>
           </form>

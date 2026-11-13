@@ -17,6 +17,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { PermissionNotice } from '../components/PermissionNotice';
+import { getJakartaDateString } from '../services/inventoryEngine';
 
 export const BarangMasuk: React.FC = () => {
   const {
@@ -40,7 +41,7 @@ export const BarangMasuk: React.FC = () => {
 
   // Form state
   const [formData, setFormData] = useState({
-    receiptDate: new Date().toISOString().slice(0, 10),
+    receiptDate: getJakartaDateString(),
     sourceSupplier: suppliers[0]?.name || '',
     referenceDocument: '',
     materialId: activeMaterials[0]?.id || '',
@@ -206,7 +207,7 @@ export const BarangMasuk: React.FC = () => {
         setModalOpen(false);
         // Reset form safely with valid active material
         setFormData({
-          receiptDate: new Date().toISOString().slice(0, 10),
+          receiptDate: getJakartaDateString(),
           sourceSupplier: suppliers[0]?.name || '',
           referenceDocument: '',
           materialId: activeMaterials[0]?.id || '',

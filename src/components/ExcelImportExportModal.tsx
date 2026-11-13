@@ -23,6 +23,7 @@ import {
   parseUploadedFile,
 } from '../utils/excelUtils';
 import { ExcelImportValidationError } from '../types';
+import { getJakartaDateString } from '../services/inventoryEngine';
 
 interface Props {
   initialModule?: ImportModuleType;
@@ -36,6 +37,8 @@ export const ExcelImportExportModal: React.FC<Props> = ({ initialModule = 'MATER
     locations,
     categories,
     units,
+    suppliers,
+    requestingUnits,
     inventory,
     goodsReceipts,
     goodsIssues,
@@ -159,16 +162,20 @@ export const ExcelImportExportModal: React.FC<Props> = ({ initialModule = 'MATER
     setPreviewStep(true);
   };
 
-  // Confirm Import
-  const handleConfirmImport = () => {
+  // Confirm Import (async Firestore batch / controlled Stock Opname draft flow)
+  const handleConfirmImport = async () => {
     setIsProcessing(true);
-    setTimeout(() => {
-      const result = executeExcelImport(selectedModule, mappedRows, importMode);
-      setIsProcessing(false);
-      if (result.successCount > 0) {
+    try {
+      const result = await executeExcelImport(selectedModule, mappedRows, importMode);
+      if (result.errors && result.errors.length > 0) {
+        setValidationErrors(result.errors);
+      }
+      if (result.successCount > 0 && result.errorCount === 0) {
         onClose();
       }
-    }, 300);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // Download Error Report
@@ -180,13 +187,13 @@ export const ExcelImportExportModal: React.FC<Props> = ({ initialModule = 'MATER
       'Nilai Terbaca': err.value ?? '',
       'Pesan Kesalahan': err.message,
     }));
-    exportToCsvFile(errorData, `Laporan_Kesalahan_Import_${selectedModule}`);
+    exportToCsvFile(errorData, `Laporan_Kesalahan_Import_${selectedModule}_${getJakartaDateString()}.csv`);
   };
 
   // Export handler
   const handleExecuteExport = (format: 'xlsx' | 'csv') => {
     let exportData: Record<string, any>[] = [];
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = getJakartaDateString();
 
     if (selectedModule === 'MATERIAL_MASTER') {
       exportData = materials.map((m) => ({
@@ -211,6 +218,39 @@ export const ExcelImportExportModal: React.FC<Props> = ({ initialModule = 'MATER
         'Capacity (m2)': l.capacityM2 || 0,
         'Address': l.address || '-',
         'Status': l.isActive ? 'Active' : 'Inactive',
+      }));
+    } else if (selectedModule === 'MATERIAL_CATEGORY') {
+      exportData = categories.map((c) => ({
+        'Category Code': c.code,
+        'Category Name': c.name,
+        'Description': c.description || '-',
+        'Status': c.isActive !== false ? 'Active' : 'Inactive',
+      }));
+    } else if (selectedModule === 'UNIT_OF_MEASURE') {
+      exportData = units.map((u) => ({
+        'Unit Code': u.code,
+        'Unit Name': u.name,
+        'Description': u.description || '-',
+        'Status': u.isActive !== false ? 'Active' : 'Inactive',
+      }));
+    } else if (selectedModule === 'SUPPLIER_MASTER') {
+      exportData = suppliers.map((s) => ({
+        'Supplier Code': s.code,
+        'Supplier Name': s.name,
+        'Contact Person': s.contactPerson,
+        'Phone': s.phone,
+        'Email': s.email || '-',
+        'Address': s.address || '-',
+        'Status': s.isActive !== false ? 'Active' : 'Inactive',
+      }));
+    } else if (selectedModule === 'REQUESTING_UNIT_MASTER') {
+      exportData = requestingUnits.map((u) => ({
+        'Unit Code': u.code || u.unitCode || '',
+        'Unit Name': u.name || u.unitName || '',
+        'Division': u.division || '-',
+        'Contact Person': u.contactPerson || '-',
+        'Description': u.description || '-',
+        'Status': u.isActive !== false ? 'Active' : 'Inactive',
       }));
     } else if (selectedModule === 'INVENTORY_OPENING') {
       exportData = inventory.map((b) => ({
@@ -355,6 +395,15 @@ export const ExcelImportExportModal: React.FC<Props> = ({ initialModule = 'MATER
               </button>
             </div>
           </div>
+
+          {selectedModule === 'INVENTORY_OPENING' && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-900 leading-relaxed flex items-start gap-2">
+              <HelpCircle className="w-4 h-4 text-blue-700 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold">Alur Terkendali Physical Opening Balance:</span> Import Saldo Awal tidak pernah menimpa <span className="font-mono">/inventory.availableStock</span> secara langsung. Setiap baris valid akan dibuat sebagai draf <strong>Stock Opname (PENDING_APPROVAL)</strong> + permintaan di <strong>Approval Center</strong> untuk diotorisasi Admin menjadi Baseline Fisik resmi.
+              </div>
+            </div>
+          )}
 
           {activeTab === 'IMPORT' ? (
             <>
